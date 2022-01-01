@@ -8,7 +8,10 @@ use hyper::{
     Body, Client, Request, Response, Server, StatusCode, Uri,
 };
 use ic_agent::{
-    agent::http_transport::ReqwestHttpReplicaV2Transport, export::Principal, Agent, AgentError,
+    agent::http_transport::ReqwestHttpReplicaV2Transport,
+    export::Principal,
+    ic_types::{hash_tree::LookupResult, HashTree},
+    lookup_value, Agent, AgentError, Certificate,
 };
 use ic_utils::{
     call::SyncCall,
@@ -16,6 +19,8 @@ use ic_utils::{
         HeaderField, HttpRequestCanister, StreamingCallbackHttpResponse, StreamingStrategy,
     },
 };
+use lazy_regex::regex_captures;
+use sha2::{Digest, Sha256};
 use slog::Drain;
 use std::{
     convert::Infallible,
@@ -242,8 +247,56 @@ async fn forward_request(
         Err(e) => return Err(e.into()),
     };
 
+    let mut certificate: Option<Result<Vec<u8>, ()>> = None;
+    let mut tree: Option<Result<Vec<u8>, ()>> = None;
+
     let mut builder = Response::builder().status(StatusCode::from_u16(http_response.status_code)?);
     for HeaderField(name, value) in http_response.headers {
+        if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
+            for field in value.split(',') {
+                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field) {
+                    slog::trace!(logger, ">> certificate {}: {}", name, b64_value);
+                    let bytes = base64::decode(b64_value).map_err(|e| {
+                        slog::warn!(logger, "Unable to decode {} in ic-certificate from base64: {}", name, e);
+                        ()
+                    });
+                    if name == "certificate" {
+                        certificate = Some(match (certificate, bytes) {
+                            (None, bytes) => bytes,
+                            (Some(Ok(certificate)), Ok(bytes)) => {
+                                slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
+                                Ok(certificate)
+                            },
+                            (Some(Ok(certificate)), Err(_)) => {
+                                slog::warn!(logger, "duplicate certificate field (failed to decode)");
+                                Ok(certificate)
+                            },
+                            (Some(Err(_)), bytes) => {
+                                slog::warn!(logger, "duplicate certificate field (failed to decode)");
+                                bytes
+                            },
+                        });
+                    } else if name == "tree" {
+                        tree = Some(match (tree, bytes) {
+                            (None, bytes) => bytes,
+                            (Some(Ok(tree)), Ok(bytes)) => {
+                                slog::warn!(logger, "duplicate tree field: {:?}", bytes);
+                                Ok(tree)
+                            },
+                            (Some(Ok(tree)), Err(_)) => {
+                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                Ok(tree)
+                            },
+                            (Some(Err(_)), bytes) => {
+                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                bytes
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
         builder = builder.header(&name, value);
     }
 
@@ -304,6 +357,34 @@ async fn forward_request(
 
         builder.body(body)?
     } else {
+        let body_valid = match (certificate, tree) {
+            (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
+                &certificate,
+                &tree,
+                &canister_id,
+                &agent,
+                &uri,
+                &http_response.body,
+                logger.clone(),
+            ) {
+                Ok(valid) => valid,
+                Err(e) => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(format!("Certificate validation failed: {}", e).into())
+                        .unwrap());
+                }
+            },
+            (Some(_), _) | (_, Some(_)) => false,
+            // Canisters don't have to provide certified variables
+            (None, None) => true,
+        };
+        if !body_valid {
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body("Body does not pass verification".into())
+                .unwrap());
+        }
         builder.body(http_response.body.into())?
     };
 
@@ -345,6 +426,76 @@ async fn forward_request(
     }
 
     Ok(response)
+}
+
+fn validate_body(
+    certificate: &[u8],
+    tree: &[u8],
+    canister_id: &Principal,
+    agent: &Agent,
+    uri: &Uri,
+    response_body: &[u8],
+    logger: slog::Logger,
+) -> anyhow::Result<bool> {
+    let cert: Certificate =
+        serde_cbor::from_slice(&certificate).map_err(AgentError::InvalidCborData)?;
+    let tree: HashTree = serde_cbor::from_slice(&tree).map_err(AgentError::InvalidCborData)?;
+
+    if let Err(e) = agent.verify(&cert) {
+        slog::trace!(logger, ">> certificate failed verification: {}", e);
+        return Ok(false);
+    }
+
+    let certified_data_path = vec![
+        "canister".into(),
+        canister_id.into(),
+        "certified_data".into(),
+    ];
+    let witness = match lookup_value(&cert, certified_data_path) {
+        Ok(witness) => witness,
+        Err(e) => {
+            slog::trace!(
+                logger,
+                ">> Could not find certified data for this canister in the certificate: {}",
+                e
+            );
+            return Ok(false);
+        }
+    };
+    let digest = tree.digest();
+
+    if witness != digest {
+        slog::trace!(
+            logger,
+            ">> witness ({}) did not match digest ({})",
+            hex::encode(witness),
+            hex::encode(digest)
+        );
+
+        return Ok(false);
+    }
+
+    let path = ["http_assets".into(), uri.path().into()];
+    let tree_sha = match tree.lookup_path(&path) {
+        LookupResult::Found(v) => v,
+        _ => match tree.lookup_path(&["http_assets".into(), "/index.html".into()]) {
+            LookupResult::Found(v) => v,
+            _ => {
+                slog::trace!(
+                    logger,
+                    ">> Invalid Tree in the header. Does not contain path {:?}",
+                    path
+                );
+                return Ok(false);
+            }
+        },
+    };
+
+    let mut sha256 = Sha256::new();
+    sha256.update(response_body);
+    let body_sha = sha256.finalize();
+
+    Ok(&body_sha[..] == tree_sha)
 }
 
 fn is_hop_header(name: &str) -> bool {
