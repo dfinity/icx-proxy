@@ -413,7 +413,9 @@ async fn forward_api(
 ) -> Result<Response<Body>, Box<dyn Error>> {
     let proxied_request = create_proxied_request(ip_addr, replica_url, request)?;
 
-    let client = Client::builder().build(hyper_tls::HttpsConnector::new());
+    let client = Client::builder()
+        .http2_only(true)
+        .build(hyper_tls::HttpsConnector::new());
     let response = client.request(proxied_request).await?;
     Ok(response)
 }
@@ -555,7 +557,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let server = Server::bind(&opts.address).serve(service);
+        let server = Server::bind(&opts.address).http2_only(true).serve(service);
         server.await?;
         Ok(())
     })
