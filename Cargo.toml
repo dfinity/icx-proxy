@@ -24,8 +24,8 @@ garcon = { version = "0.2.3", features = ["async"] }
 hex = "0.4.3"
 hyper = { version = "0.14.13", features = ["full"] }
 hyper-tls = "0.5.0"
-ic-agent = { git = "https://github.com/paulyoung/agent-rs", branch = "paulyoung/http-request" }
-ic-utils = { git = "https://github.com/paulyoung/agent-rs", branch = "paulyoung/http-request" }
+ic-agent = "0.10.2"
+ic-utils = "0.10.2"
 tokio = { version = "1.8.1", features = ["full"] }
 serde = "1.0.115"
 serde_json = "1.0.57"

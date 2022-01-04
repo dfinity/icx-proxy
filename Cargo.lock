@@ -676,8 +676,9 @@ dependencies = [
 
 [[package]]
 name = "ic-agent"
-version = "0.10.1"
-source = "git+https://github.com/paulyoung/agent-rs?branch=paulyoung/http-request#3d2ebe3f02dfe1324ff791c0aa3a5d2cacbff3a3"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81e548dccc4db4fc5be468e7913f9c481866c7a987795c783c3b13a1dd4a4f91"
 dependencies = [
  "async-trait",
  "base32",
@@ -721,8 +722,9 @@ dependencies = [
 
 [[package]]
 name = "ic-utils"
-version = "0.10.1"
-source = "git+https://github.com/paulyoung/agent-rs?branch=paulyoung/http-request#3d2ebe3f02dfe1324ff791c0aa3a5d2cacbff3a3"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff41e25a5a039b18609cb24f4e07e95d537e6db449765b6dd144177ba554e927"
 dependencies = [
  "async-trait",
  "candid",
@@ -1538,9 +1540,9 @@ dependencies = [
 
 [[package]]
 name = "serde"
-version = "1.0.130"
+version = "1.0.133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f12d06de37cf59146fbdecab66aa99f9fe4f78722e3607577a5375d66bd0c913"
+checksum = "97565067517b60e2d1ea8b268e59ce036de907ac523ad83a0475da04e818989a"
 dependencies = [
  "serde_derive",
 ]
@@ -1566,9 +1568,9 @@ dependencies = [
 
 [[package]]
 name = "serde_derive"
-version = "1.0.130"
+version = "1.0.133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7bc1a1ab1961464eae040d96713baa5a724a8152c1222492465b54322ec508b"
+checksum = "ed201699328568d8d08208fdd080e3ff594e6c422e438b6705905da01005d537"
 dependencies = [
  "proc-macro2",
  "quote",
