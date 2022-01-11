@@ -289,7 +289,12 @@ async fn forward_request(
                 if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field) {
                     slog::trace!(logger, ">> certificate {}: {}", name, b64_value);
                     let bytes = base64::decode(b64_value).map_err(|e| {
-                        slog::warn!(logger, "Unable to decode {} in ic-certificate from base64: {}", name, e);
+                        slog::warn!(
+                            logger,
+                            "Unable to decode {} in ic-certificate from base64: {}",
+                            name,
+                            e
+                        );
                         ()
                     });
                     if name == "certificate" {
@@ -298,15 +303,21 @@ async fn forward_request(
                             (Some(Ok(certificate)), Ok(bytes)) => {
                                 slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
                                 Ok(certificate)
-                            },
+                            }
                             (Some(Ok(certificate)), Err(_)) => {
-                                slog::warn!(logger, "duplicate certificate field (failed to decode)");
+                                slog::warn!(
+                                    logger,
+                                    "duplicate certificate field (failed to decode)"
+                                );
                                 Ok(certificate)
-                            },
+                            }
                             (Some(Err(_)), bytes) => {
-                                slog::warn!(logger, "duplicate certificate field (failed to decode)");
+                                slog::warn!(
+                                    logger,
+                                    "duplicate certificate field (failed to decode)"
+                                );
                                 bytes
-                            },
+                            }
                         });
                     } else if name == "tree" {
                         tree = Some(match (tree, bytes) {
@@ -314,15 +325,15 @@ async fn forward_request(
                             (Some(Ok(tree)), Ok(bytes)) => {
                                 slog::warn!(logger, "duplicate tree field: {:?}", bytes);
                                 Ok(tree)
-                            },
+                            }
                             (Some(Ok(tree)), Err(_)) => {
                                 slog::warn!(logger, "duplicate tree field (failed to decode)");
                                 Ok(tree)
-                            },
+                            }
                             (Some(Err(_)), bytes) => {
                                 slog::warn!(logger, "duplicate tree field (failed to decode)");
                                 bytes
-                            },
+                            }
                         });
                     }
                 }
