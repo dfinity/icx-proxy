@@ -295,7 +295,6 @@ async fn forward_request(
                             name,
                             e
                         );
-                        ()
                     });
                     if name == "certificate" {
                         certificate = Some(match (certificate, bytes) {
@@ -481,8 +480,8 @@ fn validate_body(
     logger: slog::Logger,
 ) -> anyhow::Result<bool> {
     let cert: Certificate =
-        serde_cbor::from_slice(&certificate).map_err(AgentError::InvalidCborData)?;
-    let tree: HashTree = serde_cbor::from_slice(&tree).map_err(AgentError::InvalidCborData)?;
+        serde_cbor::from_slice(certificate).map_err(AgentError::InvalidCborData)?;
+    let tree: HashTree = serde_cbor::from_slice(tree).map_err(AgentError::InvalidCborData)?;
 
     if let Err(e) = agent.verify(&cert) {
         slog::trace!(logger, ">> certificate failed verification: {}", e);
