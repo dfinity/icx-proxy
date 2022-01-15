@@ -18,17 +18,21 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.34"
+base64 = "0.13"
 clap = "=3.0.0-beta.2"
 clap_derive = "=3.0.0-beta.2"
 garcon = { version = "0.2.3", features = ["async"] }
 hex = "0.4.3"
 hyper = { version = "0.14.13", features = ["full"] }
 hyper-tls = "0.5.0"
-ic-agent = "0.10.2"
-ic-utils = "0.10.2"
+ic-agent = "0.11"
+ic-utils = "0.11"
+lazy-regex = "2"
 tokio = { version = "1.8.1", features = ["full"] }
 serde = "1.0.115"
+serde_cbor = "0.11"
 serde_json = "1.0.57"
+sha2 = "0.10.1"
 slog = { version = "2.7.0", features = ["max_level_trace"] }
 slog-async = "2.7.0"
 slog-term = "2.8.0"
