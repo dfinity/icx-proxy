@@ -25,6 +25,14 @@ jobs:
     steps:
     - uses: actions/checkout@master
 
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: ${{ matrix.rust }}
+        override: true
+      if: contains(matrix.os, 'macos')
+
     - name: Setup environment variables
       run: |
         echo "SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
@@ -32,7 +40,13 @@ jobs:
         binaries=$(echo ${{ matrix.binary_files }} | xargs -n1 echo "--bin"|xargs)
         echo "cargo_build_ARGS<<END" >> $GITHUB_ENV
         echo "--locked --release $binaries" >> $GITHUB_ENV
+        echo "--remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity" >> $GITHUB_ENV
         echo "END" >> $GITHUB_ENV
+  
+    - name: Prepare cargo-deb
+      run: |
+        cargo install cargo-deb
+      if: contains(matrix.os, 'ubuntu')
 
     - name: Static build
       uses: gmiam/rust-musl-action@master
@@ -47,13 +61,11 @@ jobs:
         strip ${{ matrix.binary_files }}
       if: contains(matrix.os, 'ubuntu')
 
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
+    - name: Deb build
+      uses: gmiam/rust-musl-action@master
       with:
-        profile: minimal
-        toolchain: ${{ matrix.rust }}
-        override: true
-      if: contains(matrix.os, 'macos')
+        args: cargo deb --target x86_64-unknown-linux-musl -- ${{ env.cargo_build_ARGS }}
+      if: contains(matrix.os, 'ubuntu')
 
     - name: Dynamic build
       run: |
@@ -72,3 +84,12 @@ jobs:
         file: binaries.tar.gz
         asset_name: binaries-${{ matrix.name }}.tar.gz
         tag: ${{ env.SHA_SHORT }}
+
+    - name: Upload deb
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: icx-proxy.deb
+        asset_name: icx-proxy.deb
+        tag: ${{ env.SHA_SHORT }}
+      if: contains(matrix.os, 'ubuntu')
