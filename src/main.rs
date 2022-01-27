@@ -1,5 +1,5 @@
 use crate::config::dns_canister_config::DnsCanisterConfig;
-use clap::{crate_authors, crate_version, AppSettings, Clap};
+use clap::{crate_authors, crate_version, AppSettings, Parser};
 use hyper::{
     body,
     body::Bytes,
@@ -45,12 +45,11 @@ static MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
 // The maximum length of a body we should log as tracing.
 static MAX_LOG_BODY_SIZE: usize = 100;
 
-#[derive(Clap)]
+#[derive(Parser)]
 #[clap(
     version = crate_version!(),
     author = crate_authors!(),
-    global_setting = AppSettings::GlobalVersion,
-    global_setting = AppSettings::ColoredHelp
+    global_setting = AppSettings::PropagateVersion,
 )]
 pub(crate) struct Opts {
     /// Verbose level. By default, INFO will be used. Add a single `-v` to upgrade to
