@@ -263,7 +263,7 @@ async fn forward_request(
         Err(response_or_error) => return response_or_error,
     };
 
-    let http_response = if http_response.upgrade {
+    let http_response = if http_response.upgrade == Some(true) {
         let waiter = garcon::Delay::builder()
             .throttle(std::time::Duration::from_millis(500))
             .timeout(std::time::Duration::from_secs(15))

@@ -705,9 +705,9 @@ dependencies = [
 
 [[package]]
 name = "ic-agent"
-version = "0.11.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50649dbe2e37f4f503bfe2bd1d7b1f992496fc65e840972f22f338449bcda01d"
+checksum = "475e0d0b1f085c39dcd57ffb5732df35846bf882df5ddfdc50f9e249aedb36ac"
 dependencies = [
  "async-trait",
  "base32",
@@ -751,9 +751,9 @@ dependencies = [
 
 [[package]]
 name = "ic-utils"
-version = "0.11.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fd19db968e88bf8c0052280e0e75694c14971d0299783f2b0255e52ffe52ec1"
+checksum = "e403ea6d5647966d85d1dac6d918f39a615a76b34792a8576f734c571499fead"
 dependencies = [
  "async-trait",
  "candid",
