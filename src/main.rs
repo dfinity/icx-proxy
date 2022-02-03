@@ -214,11 +214,13 @@ async fn forward_request(
 
     slog::trace!(logger, "<<");
     if logger.is_trace_enabled() {
-        let body = String::from_utf8_lossy(&entire_body);
+        let body = String::from_utf8_lossy(
+            &entire_body[0..usize::min(entire_body.len(), MAX_LOG_BODY_SIZE)],
+        );
         slog::trace!(
             logger,
-            "<< {}{}",
-            &body[0..usize::min(body.len(), MAX_LOG_BODY_SIZE)],
+            "<< \"{}\"{}",
+            &body.escape_default(),
             if body.len() > MAX_LOG_BODY_SIZE {
                 format!("... {} bytes total", body.len())
             } else {
@@ -261,7 +263,7 @@ async fn forward_request(
         Err(response_or_error) => return response_or_error,
     };
 
-    let http_response = if http_response.upgrade {
+    let http_response = if http_response.upgrade == Some(true) {
         let waiter = garcon::Delay::builder()
             .throttle(std::time::Duration::from_millis(500))
             .timeout(std::time::Duration::from_secs(15))
@@ -449,14 +451,9 @@ async fn forward_request(
         slog::trace!(logger, ">>");
         slog::trace!(
             logger,
-            ">> {}{}",
-            match std::str::from_utf8(&body) {
-                Ok(s) => format!(
-                    r#""{}""#,
-                    s[..usize::min(MAX_LOG_BODY_SIZE, s.len())].escape_default()
-                ),
-                Err(_) => hex::encode(&body[..usize::min(MAX_LOG_BODY_SIZE, body.len())]),
-            },
+            ">> \"{}\"{}",
+            String::from_utf8_lossy(&body[..usize::min(MAX_LOG_BODY_SIZE, body.len())])
+                .escape_default(),
             if is_streaming {
                 "... streaming".to_string()
             } else if body.len() > MAX_LOG_BODY_SIZE {
