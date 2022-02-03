@@ -11,41 +11,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            name: linux
-            binary_path: target/x86_64-unknown-linux-musl/release
-            binary_files: icx-proxy
-            rust: 1.50.0 # gmiam/rust-musl-action@master is only at 1.50.0 now
-          - os: macos-latest
-            name: macos
-            binary_path: target/release
-            binary_files: icx-proxy
-            rust: 1.55.0
+        rust: [ '1.55.0' ]
+        os: [ ubuntu-latest, macos-latest ]
+
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v2
 
     - name: Setup environment variables
       run: |
         echo "SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
         echo "OPENSSL_STATIC=yes" >> $GITHUB_ENV
-        binaries=$(echo ${{ matrix.binary_files }} | xargs -n1 echo "--bin"|xargs)
-        echo "cargo_build_ARGS<<END" >> $GITHUB_ENV
-        echo "--locked --release $binaries" >> $GITHUB_ENV
-        echo "END" >> $GITHUB_ENV
-
-    - name: Static build
-      uses: gmiam/rust-musl-action@master
-      with:
-        args: cargo build --target x86_64-unknown-linux-musl ${{ env.cargo_build_ARGS }}
-      if: contains(matrix.os, 'ubuntu')
-
-    - name: Strip binaries
-      run: |
-        cd ${{ matrix.binary_path }}
-        sudo chown -R $(whoami) .
-        strip ${{ matrix.binary_files }}
-      if: contains(matrix.os, 'ubuntu')
+        echo ICX_VERSION=$(cargo metadata | jq -r '.["packages"][] | select(.name == "icx-proxy")["version"]') >> $GITHUB_ENV
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1
@@ -55,15 +31,33 @@ jobs:
         override: true
       if: contains(matrix.os, 'macos')
 
-    - name: Dynamic build
+    - name: Linux hack
       run: |
-        cargo build ${{ env.cargo_build_ARGS }}
-        cd ${{ matrix.binary_path }}
-        otool -L ${{ matrix.binary_files }}
+          echo "1.58.1" >./rust-toolchain
+      if: contains(matrix.os, 'ubuntu')
+
+    - name: Linux build
+      uses: dfinity/rust-musl-action@master
+      with:
+        args: |
+          cargo install cargo-deb --target x86_64-unknown-linux-musl
+          echo "1.55.0" >./rust-toolchain
+          rustup target add x86_64-unknown-linux-musl
+          RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity" cargo deb --target x86_64-unknown-linux-musl -- --locked
+      if: contains(matrix.os, 'ubuntu')
+
+    - name: macOS build
+      env:
+        RUSTFLAGS: --remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity
+      run: |
+        cargo build --locked --release
+        cd target/release
+        otool -L icx-proxy
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
-      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz ${{ matrix.binary_files }}
+      run: tar -zcC target/release -f binaries.tar.gz icx-proxy
+      if: contains(matrix.os, 'macos')
 
     - name: Upload tarball
       uses: svenstaro/upload-release-action@v2
@@ -72,3 +66,13 @@ jobs:
         file: binaries.tar.gz
         asset_name: binaries-${{ matrix.name }}.tar.gz
         tag: ${{ env.SHA_SHORT }}
+      if: contains(matrix.os, 'macos')
+
+    - name: Upload deb
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb
+        asset_name: icx-proxy.deb
+        tag: ${{ env.SHA_SHORT }}
+      if: contains(matrix.os, 'ubuntu')
