@@ -287,7 +287,7 @@ async fn forward_request(
     for HeaderField(name, value) in http_response.headers {
         if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
             for field in value.split(',') {
-                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field) {
+                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
                     slog::trace!(logger, ">> certificate {}: {}", name, b64_value);
                     let bytes = base64::decode(b64_value).map_err(|e| {
                         slog::warn!(
