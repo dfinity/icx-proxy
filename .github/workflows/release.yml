@@ -15,8 +15,10 @@ jobs:
         os: [ ubuntu-latest, macos-latest ]
         include:
           - os: macos-latest
+            binary_path: target/x86_64-unknown-linux-musl/release
             name: macos
           - os: ubuntu-latest
+            binary_path: target/release
             name: linux
 
     steps:
@@ -49,7 +51,6 @@ jobs:
           echo "1.55.0" >./rust-toolchain
           rustup target add x86_64-unknown-linux-musl
           RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity" cargo deb --target x86_64-unknown-linux-musl -- --locked
-          ls ./target/release
       if: contains(matrix.os, 'ubuntu')
 
     - name: macOS build
@@ -62,7 +63,7 @@ jobs:
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
-      run: tar -zcC target/release -f binaries.tar.gz icx-proxy
+      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
     - name: Upload tarball
       uses: svenstaro/upload-release-action@v2
