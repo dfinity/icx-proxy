@@ -15,10 +15,10 @@ jobs:
         os: [ ubuntu-latest, macos-latest ]
         include:
           - os: macos-latest
-            binary_path: target/x86_64-unknown-linux-musl/release
+            binary_path: target/release
             name: macos
           - os: ubuntu-latest
-            binary_path: target/release
+            binary_path: target/x86_64-unknown-linux-musl/release
             name: linux
 
     steps:
