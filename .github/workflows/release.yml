@@ -15,7 +15,11 @@ jobs:
         os: [ ubuntu-latest, macos-latest ]
         include:
           - os: macos-latest
+            binary_path: target/release
             name: macos
+          - os: ubuntu-latest
+            binary_path: target/x86_64-unknown-linux-musl/release
+            name: linux
 
     steps:
     - uses: actions/checkout@v2
@@ -59,8 +63,7 @@ jobs:
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
-      run: tar -zcC target/release -f binaries.tar.gz icx-proxy
-      if: contains(matrix.os, 'macos')
+      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
     - name: Upload tarball
       uses: svenstaro/upload-release-action@v2
@@ -69,7 +72,6 @@ jobs:
         file: binaries.tar.gz
         asset_name: binaries-${{ matrix.name }}.tar.gz
         tag: ${{ env.SHA_SHORT }}
-      if: contains(matrix.os, 'macos')
 
     - name: Upload deb
       uses: svenstaro/upload-release-action@v2
