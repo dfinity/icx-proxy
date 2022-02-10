@@ -1,5 +1,5 @@
 # `icx-proxy`
-A command line tool to serve as a gateway for a Internet Computer replica.
+A command line tool to serve as a gateway for an Internet Computer replica. This will be started automatically by `dfx`.
 
 ## Contributing
 Please follow the guidelines in the [CONTRIBUTING.md](.github/CONTRIBUTING.md) document.
