@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: [ '1.55.0' ]
-        os: [ ubuntu-latest, macos-latest ]
+        target: [ x86_64-apple-darwin, x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu ]
         include:
           - os: macos-latest
             target: x86_64-apple-darwin
