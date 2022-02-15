@@ -64,7 +64,7 @@ jobs:
         RUSTFLAGS: --remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity
       run: |
         cargo build --locked --release --target x86_64-unknown-linux-gnu
-        cd target/release
+        cd ${{ matrix.binary_path }} 
         ldd icx-proxy
       if: contains(matrix.target, 'linux-gnu')
 
