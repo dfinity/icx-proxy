@@ -12,15 +12,20 @@ jobs:
       fail-fast: false
       matrix:
         rust: [ '1.55.0' ]
-        os: [ ubuntu-latest, macos-latest ]
+        target: [ x86_64-apple-darwin, x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu ]
         include:
           - os: macos-latest
+            target: x86_64-apple-darwin
             binary_path: target/release
             name: macos
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
             binary_path: target/x86_64-unknown-linux-musl/release
             name: linux
-
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_path: target/x86_64-unknown-linux-gnu/release
+            name: linux-gnu
     steps:
     - uses: actions/checkout@v2
 
@@ -38,12 +43,12 @@ jobs:
         override: true
       if: contains(matrix.os, 'macos')
 
-    - name: Linux hack
+    - name: Linux hack (musl only)
       run: |
           echo "1.58.1" >./rust-toolchain
-      if: contains(matrix.os, 'ubuntu')
+      if: contains(matrix.target, 'linux-musl')
 
-    - name: Linux build
+    - name: Linux build (musl)
       uses: dfinity/rust-musl-action@master
       with:
         args: |
@@ -51,7 +56,16 @@ jobs:
           echo "1.55.0" >./rust-toolchain
           rustup target add x86_64-unknown-linux-musl
           RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity" cargo deb --target x86_64-unknown-linux-musl -- --locked
-      if: contains(matrix.os, 'ubuntu')
+      if: contains(matrix.target, 'linux-musl')
+
+    - name: Linux build (gnu)
+      env:
+        RUSTFLAGS: --remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity
+      run: |
+        cargo build --locked --release --target x86_64-unknown-linux-gnu
+        cd ${{ matrix.binary_path }} 
+        ldd icx-proxy
+      if: contains(matrix.target, 'linux-gnu')
 
     - name: macOS build
       env:
@@ -80,4 +94,5 @@ jobs:
         file: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb
         asset_name: icx-proxy.deb
         tag: ${{ env.SHA_SHORT }}
-      if: contains(matrix.os, 'ubuntu')
+      if: contains(matrix.target, 'linux-musl')
+
