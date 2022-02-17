@@ -422,7 +422,8 @@ async fn forward_request(
             // Canisters don't have to provide certified variables
             (None, None) => true,
         };
-        if !body_valid {
+        
+        if !body_valid && !cfg!(feature="skip_body_verification") {
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body("Body does not pass verification".into())
