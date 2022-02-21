@@ -82,6 +82,12 @@ jobs:
     - name: Create tarball of binaries
       run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
+    - name: Inspect tarball
+      run: |
+        cat binaries.tar.gz | gunzip | tar -xv
+        ls -l icx-proxy
+        hexdump -C icx-proxy | head
+
     - name: Upload tarball
       uses: svenstaro/upload-release-action@v2
       with:
