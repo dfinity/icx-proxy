@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - macos-binary
 
 jobs:
   build:
@@ -74,6 +75,8 @@ jobs:
         cargo build --locked --release
         cd target/release
         otool -L icx-proxy
+        ls -l
+        hexdump -C icx-proxy | head
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
