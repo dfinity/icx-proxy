@@ -63,7 +63,7 @@ jobs:
       env:
         RUSTFLAGS: --remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity
       run: |
-        cargo build --locked --release --target x86_64-unknown-linux-gnu
+        cargo build --locked --release --target x86_64-unknown-linux-gnu --features=skip_body_verification
         cd ${{ matrix.binary_path }} 
         ldd icx-proxy
       if: contains(matrix.target, 'linux-gnu')
@@ -72,7 +72,7 @@ jobs:
       env:
         RUSTFLAGS: --remap-path-prefix=${GITHUB_WORKSPACE}=/builds/dfinity
       run: |
-        cargo build --locked --release
+        cargo build --locked --release --features=skip_body_verification
         cd target/release
         otool -L icx-proxy
       if: contains(matrix.os, 'macos')
