@@ -82,11 +82,18 @@ jobs:
     - name: Create tarball of binaries
       run: |
         while true ; do
+          echo "target/release"
+          ls -l target/release
+          hexdump -C target/release/icx-proxy | head
+
           tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
+
+          echo "check tarball"
           rm -f icx-proxy
           cat binaries.tar.gz | gunzip | tar -xv
           ls -l icx-proxy
           hexdump -C icx-proxy | head
+          
           ./icx-proxy --help && exit 0
         done
 
