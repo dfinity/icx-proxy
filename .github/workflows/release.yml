@@ -77,13 +77,11 @@ jobs:
         otool -L icx-proxy
         ls -l
         hexdump -C icx-proxy | head
-        hexdump -C icx-proxy | head
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
       run: |
         pwd
-        # sleep 10
         hexdump -C ${{ matrix.binary_path }}/icx-proxy | head
         tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
@@ -94,7 +92,6 @@ jobs:
         cat binaries.tar.gz | gunzip | tar -xv
         ls -l icx-proxy
         hexdump -C icx-proxy | head
-        ./icx-proxy --help
 
     - name: Upload tarball
       uses: svenstaro/upload-release-action@v2
