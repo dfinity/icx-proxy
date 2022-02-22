@@ -80,7 +80,15 @@ jobs:
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
-      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
+      run: |
+        while true ; do
+          tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
+          rm -f icx-proxy
+          cat binaries.tar.gz | gunzip | tar -xv
+          ls -l icx-proxy
+          hexdump -C icx-proxy | head
+          ./icx-proxy --help && exit 0
+        done
 
     - name: Inspect tarball
       run: |
