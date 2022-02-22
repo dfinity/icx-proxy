@@ -84,7 +84,7 @@ jobs:
       run: |
         pwd
         # sleep 10
-        # hexdump -C ${{ matrix.binary_path }}/icx-proxy | head
+        hexdump -C ${{ matrix.binary_path }}/icx-proxy | head
         tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
     - name: Inspect tarball
