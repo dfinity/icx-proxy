@@ -89,7 +89,7 @@ jobs:
         
           tar --version
 
-          tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
+          tar -cC ${{ matrix.binary_path }} icx-proxy | gzip >binaries.tar.gz
 
           echo "check tarball"
           rm -f icx-proxy
