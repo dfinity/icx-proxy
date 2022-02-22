@@ -82,7 +82,7 @@ jobs:
     - name: Create tarball of binaries
       run: |
         pwd
-        sleep 10
+        # sleep 10
         # hexdump -C ${{ matrix.binary_path }}/icx-proxy | head
         tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
