@@ -77,6 +77,7 @@ jobs:
         otool -L icx-proxy
         ls -l
         hexdump -C icx-proxy | head
+        hexdump -C icx-proxy | head
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
