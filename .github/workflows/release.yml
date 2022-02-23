@@ -84,10 +84,11 @@ jobs:
       run: |
         ARCHIVE="$(pwd)/binaries.tar.gz"
         cd "$(mktemp -d)"
-
+        tar --version
         tar -xzvf "$ARCHIVE"
         ls -l icx-proxy
         hexdump -C icx-proxy | head
+        hexdump -C icx-proxy | tail
         ./icx-proxy --help
 
     - name: Upload tarball
