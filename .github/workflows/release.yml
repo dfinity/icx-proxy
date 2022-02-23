@@ -75,36 +75,17 @@ jobs:
         cargo build --locked --release
         cd target/release
         otool -L icx-proxy
-        ls -l
-        hexdump -C icx-proxy | head
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
-      run: |
-        set -x
-        while true ; do
-          echo "target/release"
-          ls -l target/release
-          hexdump -C target/release/icx-proxy | head
-        
-          tar --version
-
-          tar -cC ${{ matrix.binary_path }} icx-proxy | gzip >binaries.tar.gz
-
-          echo "check tarball"
-          rm -f icx-proxy
-          cat binaries.tar.gz | gunzip | tar -xv
-          ls -l icx-proxy
-          hexdump -C icx-proxy | head
-          
-          ./icx-proxy --help && exit 0
-        done
+      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
     - name: Inspect tarball
       run: |
-        pwd
-        ls -l
-        cat binaries.tar.gz | gunzip | tar -xv
+        ARCHIVE="$(pwd)/binaries.tar.gz"
+        cd "$(mktemp -d)"
+
+        tar -xzvf "$ARCHIVE"
         ls -l icx-proxy
         hexdump -C icx-proxy | head
         ./icx-proxy --help
