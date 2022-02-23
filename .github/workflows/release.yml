@@ -82,9 +82,9 @@ jobs:
 
     - name: Inspect input binary and tarball contents
       run: |
-        hexdump -C target/release/icx-proxy | head
-        hexdump -C target/release/icx-proxy | tail
-        target/release/icx-proxy --help
+        hexdump -C ${{ matrix.binary_path }}/icx-proxy | head
+        hexdump -C ${{ matrix.binary_path }}/icx-proxy | tail
+        ${{ matrix.binary_path }}/icx-proxy --help
         
         ARCHIVE="$(pwd)/binaries.tar.gz"
         cd "$(mktemp -d)"
