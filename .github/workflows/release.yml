@@ -80,8 +80,12 @@ jobs:
     - name: Create tarball of binaries
       run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
-    - name: Inspect tarball
+    - name: Inspect input binary and tarball contents
       run: |
+        hexdump -C target/release/icx-proxy | head
+        hexdump -C target/release/icx-proxy | tail
+        target/release/icx-proxy --help
+        
         ARCHIVE="$(pwd)/binaries.tar.gz"
         cd "$(mktemp -d)"
         tar --version
