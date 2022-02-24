@@ -101,7 +101,7 @@ jobs:
         name: tarball-${{ matrix.name }}
         path: binaries.tar.gz
     - name: Copy deb artifact
-      run: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb icx-proxy.deb
+      run: cp target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb icx-proxy.deb
       if: contains(matrix.target, 'linux-musl')
     - name: Upload deb artifact
       uses: actions/upload-artifact@v2
