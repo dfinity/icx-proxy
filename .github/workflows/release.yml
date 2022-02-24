@@ -104,7 +104,8 @@ jobs:
       uses: actions/upload-artifact@v2
       with:
         name: deb-${{ matrix.name }}
-        path: icx-proxy.deb
+        path: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb
+        asset_name: icx-proxy.deb
       if: contains(matrix.target, 'linux-musl')
 
   upload:
@@ -148,8 +149,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb
-          asset_name: icx-proxy.deb
+          file: icx-proxy.deb
           tag: ${{ env.SHA_SHORT }}
         if: contains(matrix.target, 'linux-musl')
 
