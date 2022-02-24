@@ -140,6 +140,9 @@ jobs:
           name: deb-${{ matrix.name }}
         if: contains(matrix.target, 'linux-musl')
 
+      - name: Look at files
+        run: ls -l
+
       - name: Upload tarball
         uses: svenstaro/upload-release-action@v2
         with:
