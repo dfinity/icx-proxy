@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - macos-binary
 
 jobs:
   build:
@@ -94,20 +95,61 @@ jobs:
         hexdump -C icx-proxy | tail
         ./icx-proxy --help
 
-    - name: Upload tarball
-      uses: svenstaro/upload-release-action@v2
+    - name: Upload tarball artifact
+      uses: actions/upload-artifact@v2
       with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: binaries.tar.gz
-        asset_name: binaries-${{ matrix.name }}.tar.gz
-        tag: ${{ env.SHA_SHORT }}
-
-    - name: Upload deb
-      uses: svenstaro/upload-release-action@v2
+        name: tarball-${{ matrix.name }}
+        path: binaries.tar.gz
+    - name: Upload deb artifact
+      uses: actions/upload-artifact@v2
       with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb
-        asset_name: icx-proxy.deb
-        tag: ${{ env.SHA_SHORT }}
+        name: deb-${{ matrix.name }}
+        path: icx-proxy.deb
       if: contains(matrix.target, 'linux-musl')
+
+  upload:
+    runs-on: ${{ matrix.os }}
+    needs: [ build ]
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [ '1.55.0' ]
+        target: [ x86_64-apple-darwin, x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu ]
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: linux
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-gnu
+    steps:
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: tarball-${{ matrix.name }}
+      - name: Download deb artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: deb-${{ matrix.name }}
+        if: contains(matrix.target, 'linux-musl')
+
+      - name: Upload tarball
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: binaries.tar.gz
+          asset_name: binaries-${{ matrix.name }}.tar.gz
+          tag: ${{ env.SHA_SHORT }}
+
+      - name: Upload deb
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb
+          asset_name: icx-proxy.deb
+          tag: ${{ env.SHA_SHORT }}
+        if: contains(matrix.target, 'linux-musl')
 
