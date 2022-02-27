@@ -541,7 +541,6 @@ fn validate_body(
     }
 
     let path = ["http_assets".into(), uri.path().into()];
-    println!("START {}", uri.path());
     let tree_sha = match tree.lookup_path(&path) {
         LookupResult::Found(v) => {
             v
@@ -562,7 +561,6 @@ fn validate_body(
     let mut sha256 = Sha256::new();
     sha256.update(response_body);
     let body_sha: [u8; 32] = sha256.finalize().into();
-    println!("CHECK {} =? {}({})", body_sha[0], tree_sha[0], tree_sha[tree_sha.len() - 1]);
     Ok(body_sha == tree_sha)
 }
 
