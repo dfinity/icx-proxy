@@ -174,6 +174,25 @@ fn resolve_canister_id(
     None
 }
 
+fn decode_hash_tree(
+    name: &str,
+    value: Option<String>,
+    logger: &slog::Logger
+) -> Result<Vec<u8>, ()> {
+    match value {
+        Some(tree) => base64::decode(tree)
+            .map_err(|e| {
+                slog::warn!(
+                    logger,
+                    "Unable to decode {} from base64: {}",
+                    name,
+                    e
+                );
+            }),
+        _ => Err(()),
+    }
+}
+
 struct HeadersData {
     certificate: Option<Result<Vec<u8>, ()>>,
     tree: Option<Result<Vec<u8>, ()>>,
@@ -203,14 +222,7 @@ fn extract_headers_data(
                         headers_data.chunk_index = b64_value.to_string();
                         continue;
                     }
-                    let bytes = base64::decode(b64_value).map_err(|e| {
-                        slog::warn!(
-                            logger,
-                            "Unable to decode {} in ic-certificate from base64: {}",
-                            name,
-                            e
-                        );
-                    });
+                    let bytes = decode_hash_tree(name, Some(b64_value.to_string()), logger);
                     if name == "certificate" {
                         headers_data.certificate = Some(match (headers_data.certificate, bytes) {
                             (None, bytes) => bytes,
@@ -396,42 +408,23 @@ async fn forward_request(
         None
     };
 
-    let decoded_body = decode_body(&http_response.body, headers_data.encoding.clone());
-    let body_valid = match (headers_data.certificate.clone(), headers_data.tree.clone()) {
-        (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
-            Certificates {
-                certificate,
-                tree,
-                chunk_tree: headers_data.chunk_tree.clone(),
-                chunk_index: headers_data.chunk_index.clone(),
-            },
-            &canister_id,
-            &agent,
-            &uri,
-            &decoded_body,
-            logger.clone(),
-        ) {
-            Ok(valid) => valid,
-            Err(e) => {
-                return Ok(Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(format!("Certificate validation failed: {}", e).into())
-                    .unwrap());
-            }
-        },
-        (Some(_), _) | (_, Some(_)) => false,
-        // Canisters don't have to provide certified variables
-        (None, None) => true,
-    };
-
-    if !body_valid && !cfg!(feature = "skip_body_verification") {
+    let is_streaming = http_response.streaming_strategy.is_some();
+    let body_valid = validate(
+        &headers_data,
+        &canister_id,
+        &agent,
+        &uri,
+        &http_response.body,
+        is_streaming,
+        logger.clone(),
+    );
+    if body_valid.is_err() {
         return Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body("Body does not pass verification".into())
+            .body(body_valid.unwrap_err().into())
             .unwrap());
     }
 
-    let is_streaming = http_response.streaming_strategy.is_some();
     let response = if let Some(streaming_strategy) = http_response.streaming_strategy {
         let (mut sender, body) = body::Body::channel();
         let agent = agent.as_ref().clone();
@@ -461,42 +454,25 @@ async fn forward_request(
                             .await
                         {
                             Ok((StreamingCallbackHttpResponse { body, token, chunk_tree },)) => {
-                                let body_valid = match (headers_data.certificate.clone(), headers_data.tree.clone(), chunk_tree) {
-                                    (Some(Ok(certificate)), Some(Ok(tree)), Some(chunk_tree)) => {
-                                        let decoded_chunk_tree = base64::decode(chunk_tree).map_err(|e| {
-                                            slog::warn!(
-                                                logger,
-                                                "Unable to decode chunk_tree from base64: {}",
-                                                e
-                                            );
-                                        }).ok();
-
-                                        let decoded_body = decode_body(&body, headers_data.encoding.clone());
-                                        validate_body(
-                                            Certificates {
-                                                certificate,
-                                                tree,
-                                                chunk_tree: decoded_chunk_tree,
-                                                chunk_index: chunk_index.clone(),
-                                            },
-                                            &canister_id,
-                                            &agent,
-                                            &uri,
-                                            &decoded_body,
-                                            logger.clone(),
-                                        )
-                                        .ok()
-                                        .unwrap_or(false)
-                                    },
-                                    _ => false,
+                                let decoded_chunk_tree = decode_hash_tree("chunk_tree", chunk_tree, &logger);
+                                let chunk_headers_data = HeadersData {
+                                    certificate: headers_data.certificate.clone(),
+                                    tree: headers_data.tree.clone(),
+                                    encoding: headers_data.encoding.clone(),
+                                    chunk_tree: decoded_chunk_tree.ok(),
+                                    chunk_index: chunk_index.clone(),
                                 };
-                            
-                                if !body_valid && !cfg!(feature = "skip_body_verification") {
-                                    sender.abort();
-                                    break;
-                                }
+                                let body_valid = validate(
+                                    &chunk_headers_data,
+                                    &canister_id,
+                                    &agent,
+                                    &uri,
+                                    &body,
+                                    is_streaming,
+                                    logger.clone(),
+                                );
 
-                                if sender.send_data(Bytes::from(body)).await.is_err() {
+                                if body_valid.is_err() || sender.send_data(Bytes::from(body)).await.is_err() {
                                     sender.abort();
                                     break;
                                 }
@@ -555,6 +531,54 @@ async fn forward_request(
     }
 
     Ok(response)
+}
+
+fn validate(
+    headers_data: &HeadersData,
+    canister_id: &Principal,
+    agent: &Agent,
+    uri: &Uri,
+    response_body: &[u8],
+    is_streaming: bool,
+    logger: slog::Logger,
+) -> Result<(), String> {
+    let decoded_body = decode_body(response_body, headers_data.encoding.clone());
+    let body_valid = match (headers_data.certificate.clone(), headers_data.tree.clone()) {
+        (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
+            Certificates {
+                certificate,
+                tree,
+                chunk_tree: headers_data.chunk_tree.clone(),
+                chunk_index: headers_data.chunk_index.clone(),
+            },
+            &canister_id,
+            &agent,
+            &uri,
+            &decoded_body,
+            logger.clone(),
+        ) {
+            Ok(valid) => if valid {
+                Ok(())
+            } else {
+                Err("Body does not pass verification".to_string())
+            },
+            Err(e) => Err(format!("Certificate validation failed: {}", e)),
+        },
+        (Some(_), _) | (_, Some(_)) => Err("Body does not pass verification".to_string()),
+        // Canisters don't have to provide certified variables
+        (None, None) => Ok(()),
+    };
+
+    if body_valid.is_err() && !cfg!(feature = "skip_body_verification") {
+        match (is_streaming, headers_data.chunk_tree.is_some()) {
+            (true, false) => {}, // backward compatibility. Headers could not contain chunk_tree witness for streaming
+            _ => {
+                return Err(body_valid.unwrap_err());
+            },
+        }
+    }
+
+    Ok(())
 }
 
 fn decode_body(body: &[u8], encoding: Option<String>) -> Vec<u8> {
