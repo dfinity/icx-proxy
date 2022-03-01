@@ -1,5 +1,9 @@
 name: Release
 
+# We have to use gtar on macOS because apple's tar is literally broken.
+# Yes, I know how stupid that sounds. But it's true:
+# https://github.com/actions/virtual-environments/issues/2619
+
 on:
   workflow_dispatch:
   push:
@@ -19,14 +23,17 @@ jobs:
             target: x86_64-apple-darwin
             binary_path: target/release
             name: macos
+            tar: gtar
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             binary_path: target/x86_64-unknown-linux-musl/release
             name: linux
+            tar: tar
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary_path: target/x86_64-unknown-linux-gnu/release
             name: linux-gnu
+            tar: tar
     steps:
     - uses: actions/checkout@v2
 
@@ -78,7 +85,7 @@ jobs:
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
-      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
+      run: ${{ matrix.tar }} -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
     - name: Inspect input binary and tarball contents
       run: |
@@ -88,8 +95,8 @@ jobs:
         
         ARCHIVE="$(pwd)/binaries.tar.gz"
         cd "$(mktemp -d)"
-        tar --version
-        tar -xzvf "$ARCHIVE"
+        ${{ matrix.tar }} --version
+        ${{ matrix.tar }} -xzvf "$ARCHIVE"
         ls -l icx-proxy
         hexdump -C icx-proxy | head
         hexdump -C icx-proxy | tail
