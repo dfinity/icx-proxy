@@ -1,5 +1,9 @@
 name: Release
 
+# We have to use gtar on macOS because apple's tar is literally broken.
+# Yes, I know how stupid that sounds. But it's true:
+# https://github.com/actions/virtual-environments/issues/2619
+
 on:
   workflow_dispatch:
   push:
@@ -91,8 +95,8 @@ jobs:
         
         ARCHIVE="$(pwd)/binaries.tar.gz"
         cd "$(mktemp -d)"
-        gtar --version
-        gtar -xzvf "$ARCHIVE"
+        ${{ matrix.tar }} --version
+        ${{ matrix.tar }} -xzvf "$ARCHIVE"
         ls -l icx-proxy
         hexdump -C icx-proxy | head
         hexdump -C icx-proxy | tail
