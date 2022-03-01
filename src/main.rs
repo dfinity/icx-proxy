@@ -47,6 +47,9 @@ static MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
 // The maximum length of a body we should log as tracing.
 static MAX_LOG_BODY_SIZE: usize = 100;
 
+// The limit of a buffer we should decompress ~10mb.
+static MAX_BYTES_SIZE_TO_DECOMPRESS: u64 = 10_000_000;
+
 #[derive(Parser)]
 #[clap(
     version = crate_version!(),
@@ -171,6 +174,105 @@ fn resolve_canister_id(
     None
 }
 
+struct HeadersData {
+    certificate: Option<Result<Vec<u8>, ()>>,
+    tree: Option<Result<Vec<u8>, ()>>,
+    chunk_tree: Option<Vec<u8>>,
+    chunk_index: String,
+    encoding: Option<String>,
+}
+
+fn extract_headers_data(
+    headers: &Vec<HeaderField>,
+    logger: &slog::Logger
+) -> HeadersData {
+    let mut headers_data = HeadersData {
+        certificate: None,
+        tree: None,
+        chunk_tree: None,
+        chunk_index: String::from("0"),
+        encoding: None,
+    };
+
+    for HeaderField(name, value) in headers {
+        if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
+            for field in value.split(',') {
+                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
+                    slog::trace!(logger, ">> certificate {}: {}", name, b64_value);
+                    if name == "chunk_index" {
+                        headers_data.chunk_index = b64_value.to_string();
+                        continue;
+                    }
+                    let bytes = base64::decode(b64_value).map_err(|e| {
+                        slog::warn!(
+                            logger,
+                            "Unable to decode {} in ic-certificate from base64: {}",
+                            name,
+                            e
+                        );
+                    });
+                    if name == "certificate" {
+                        headers_data.certificate = Some(match (headers_data.certificate, bytes) {
+                            (None, bytes) => bytes,
+                            (Some(Ok(certificate)), Ok(bytes)) => {
+                                slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
+                                Ok(certificate)
+                            }
+                            (Some(Ok(certificate)), Err(_)) => {
+                                slog::warn!(
+                                    logger,
+                                    "duplicate certificate field (failed to decode)"
+                                );
+                                Ok(certificate)
+                            }
+                            (Some(Err(_)), bytes) => {
+                                slog::warn!(
+                                    logger,
+                                    "duplicate certificate field (failed to decode)"
+                                );
+                                bytes
+                            }
+                        });
+                    } else if name == "tree" {
+                        headers_data.tree = Some(match (headers_data.tree, bytes) {
+                            (None, bytes) => bytes,
+                            (Some(Ok(tree)), Ok(bytes)) => {
+                                slog::warn!(logger, "duplicate tree field: {:?}", bytes);
+                                Ok(tree)
+                            }
+                            (Some(Ok(tree)), Err(_)) => {
+                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                Ok(tree)
+                            }
+                            (Some(Err(_)), bytes) => {
+                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                bytes
+                            }
+                        });
+                    } else if name == "chunk_tree" {
+                        headers_data.chunk_tree = match (headers_data.chunk_tree, bytes) {
+                            (None, bytes) => bytes.ok(),
+                            (Some(chunk_tree), Ok(bytes)) => {
+                                slog::warn!(logger, "duplicate chunk_tree field: {:?}", bytes);
+                                Some(chunk_tree)
+                            },
+                            (Some(chunk_tree), Err(_)) => {
+                                slog::warn!(logger, "duplicate chunk_tree field (failed to decode)");
+                                Some(chunk_tree)
+                            },
+                        };
+                    }
+                }
+            }
+        } else if name.eq_ignore_ascii_case("CONTENT-ENCODING") {
+            let enc = value.trim().to_string();
+            headers_data.encoding = Some(enc);
+        }
+    }
+
+    headers_data
+}
+
 async fn forward_request(
     request: Request<Body>,
     agent: Arc<Agent>,
@@ -282,104 +384,27 @@ async fn forward_request(
         http_response
     };
 
-    let mut certificate: Option<Result<Vec<u8>, ()>> = None;
-    let mut tree: Option<Result<Vec<u8>, ()>> = None;
-    let mut chunk_tree: Option<Vec<u8>> = None;
-    let mut chunk_index: String = String::from("0");
-    let mut encoding: Option<String> = None;
-
     let mut builder = Response::builder().status(StatusCode::from_u16(http_response.status_code)?);
-    for HeaderField(name, value) in http_response.headers {
-        if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
-            for field in value.split(',') {
-                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
-                    slog::trace!(logger, ">> certificate {}: {}", name, b64_value);
-                    if name == "chunk_index" {
-                        chunk_index = b64_value.to_string();
-                        continue;
-                    }
-                    let bytes = base64::decode(b64_value).map_err(|e| {
-                        slog::warn!(
-                            logger,
-                            "Unable to decode {} in ic-certificate from base64: {}",
-                            name,
-                            e
-                        );
-                    });
-                    if name == "certificate" {
-                        certificate = Some(match (certificate, bytes) {
-                            (None, bytes) => bytes,
-                            (Some(Ok(certificate)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
-                                Ok(certificate)
-                            }
-                            (Some(Ok(certificate)), Err(_)) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
-                                Ok(certificate)
-                            }
-                            (Some(Err(_)), bytes) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
-                                bytes
-                            }
-                        });
-                    } else if name == "tree" {
-                        tree = Some(match (tree, bytes) {
-                            (None, bytes) => bytes,
-                            (Some(Ok(tree)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate tree field: {:?}", bytes);
-                                Ok(tree)
-                            }
-                            (Some(Ok(tree)), Err(_)) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
-                                Ok(tree)
-                            }
-                            (Some(Err(_)), bytes) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
-                                bytes
-                            }
-                        });
-                    } else if name == "chunk_tree" {
-                        chunk_tree = match (chunk_tree, bytes) {
-                            (None, bytes) => bytes.ok(),
-                            (Some(chunk_tree), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate chunk_tree field: {:?}", bytes);
-                                Some(chunk_tree)
-                            },
-                            (Some(chunk_tree), Err(_)) => {
-                                slog::warn!(logger, "duplicate chunk_tree field (failed to decode)");
-                                Some(chunk_tree)
-                            },
-                        };
-                    }
-                }
-            }
-        } else if name.eq_ignore_ascii_case("CONTENT-ENCODING") {
-            let enc = value.trim().to_string();
-            encoding = Some(enc);
-        }
-
-        builder = builder.header(&name, value);
+    for HeaderField(name, value) in &http_response.headers {
+        builder = builder.header(name, value);
     }
-
+    
+    let headers_data = extract_headers_data(&http_response.headers, &logger);
     let body = if logger.is_trace_enabled() {
         Some(http_response.body.clone())
     } else {
         None
     };
 
-    let decoded_body = decode_body(&http_response.body, encoding.clone());
-    let body_valid = match (certificate.clone(), tree.clone()) {
+    let decoded_body = decode_body(&http_response.body, headers_data.encoding.clone());
+    let body_valid = match (headers_data.certificate.clone(), headers_data.tree.clone()) {
         (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
-            &certificate,
-            &tree,
-            chunk_tree,
-            chunk_index,
+            Certificates {
+                certificate,
+                tree,
+                chunk_tree: headers_data.chunk_tree.clone(),
+                chunk_index: headers_data.chunk_index.clone(),
+            },
             &canister_id,
             &agent,
             &uri,
@@ -436,7 +461,7 @@ async fn forward_request(
                             .await
                         {
                             Ok((StreamingCallbackHttpResponse { body, token, chunk_tree },)) => {
-                                let body_valid = match (certificate.clone(), tree.clone(), chunk_tree) {
+                                let body_valid = match (headers_data.certificate.clone(), headers_data.tree.clone(), chunk_tree) {
                                     (Some(Ok(certificate)), Some(Ok(tree)), Some(chunk_tree)) => {
                                         let decoded_chunk_tree = base64::decode(chunk_tree).map_err(|e| {
                                             slog::warn!(
@@ -446,13 +471,14 @@ async fn forward_request(
                                             );
                                         }).ok();
 
-                                        
-                                        let decoded_body = decode_body(&body, encoding.clone());
+                                        let decoded_body = decode_body(&body, headers_data.encoding.clone());
                                         validate_body(
-                                            &certificate,
-                                            &tree,
-                                            decoded_chunk_tree,
-                                            chunk_index.clone(),
+                                            Certificates {
+                                                certificate,
+                                                tree,
+                                                chunk_tree: decoded_chunk_tree,
+                                                chunk_index: chunk_index.clone(),
+                                            },
                                             &canister_id,
                                             &agent,
                                             &uri,
@@ -536,12 +562,14 @@ fn decode_body(body: &[u8], encoding: Option<String>) -> Vec<u8> {
         Some(enc) => match enc.as_str() {
             "gzip" => {
                 let decoded: &mut Vec<u8> = &mut vec![]; 
-                GzDecoder::new(body).read_to_end(decoded).unwrap();
+                let decoder = GzDecoder::new(body);
+                decoder.take(MAX_BYTES_SIZE_TO_DECOMPRESS).read_to_end(decoded).unwrap();
                 decoded.to_vec()
             },
             "deflate" => {
-                let decoded: &mut Vec<u8> = &mut vec![]; 
-                DeflateDecoder::new(body).read_to_end(decoded).unwrap();
+                let decoded: &mut Vec<u8> = &mut vec![];
+                let decoder = DeflateDecoder::new(body);
+                decoder.take(MAX_BYTES_SIZE_TO_DECOMPRESS).read_to_end(decoded).unwrap();
                 decoded.to_vec()
             },
             _ => body.to_vec(),
@@ -550,11 +578,15 @@ fn decode_body(body: &[u8], encoding: Option<String>) -> Vec<u8> {
     }
 }
 
-fn validate_body(
-    certificate: &[u8],
-    tree: &[u8],
+struct Certificates {
+    certificate: Vec<u8>,
+    tree: Vec<u8>,
     chunk_tree: Option<Vec<u8>>,
     chunk_index: String,
+}
+
+fn validate_body(
+    certificates: Certificates,
     canister_id: &Principal,
     agent: &Agent,
     uri: &Uri,
@@ -562,8 +594,8 @@ fn validate_body(
     logger: slog::Logger,
 ) -> anyhow::Result<bool> {
     let cert: Certificate =
-        serde_cbor::from_slice(certificate).map_err(AgentError::InvalidCborData)?;
-    let tree: HashTree = serde_cbor::from_slice(tree).map_err(AgentError::InvalidCborData)?;
+        serde_cbor::from_slice(&certificates.certificate).map_err(AgentError::InvalidCborData)?;
+    let tree: HashTree = serde_cbor::from_slice(&certificates.tree).map_err(AgentError::InvalidCborData)?;
 
     if let Err(e) = agent.verify(&cert) {
         slog::trace!(logger, ">> certificate failed verification: {}", e);
@@ -619,7 +651,7 @@ fn validate_body(
     sha256.update(response_body);
     let body_sha: [u8; 32] = sha256.finalize().into();
 
-    if let Some(tree) = chunk_tree {
+    if let Some(tree) = certificates.chunk_tree {
         let chunk_tree: HashTree = serde_cbor::from_slice(&tree).map_err(AgentError::InvalidCborData)?;
 
         let chunk_tree_digest = chunk_tree.digest();
@@ -632,7 +664,7 @@ fn validate_body(
             return Ok(false);
         }
 
-        let index_path = [chunk_index.into()];
+        let index_path = [certificates.chunk_index.into()];
         let chunk_sha = match chunk_tree.lookup_path(&index_path) {
             LookupResult::Found(v) => v,
             _ => {
