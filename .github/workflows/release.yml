@@ -1,5 +1,9 @@
 name: Release
 
+# We have to use gtar on macOS because apple's tar is literally broken.
+# Yes, I know how stupid that sounds. But it's true:
+# https://github.com/actions/virtual-environments/issues/2619
+
 on:
   workflow_dispatch:
   push:
@@ -19,14 +23,17 @@ jobs:
             target: x86_64-apple-darwin
             binary_path: target/release
             name: macos
+            tar: gtar
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             binary_path: target/x86_64-unknown-linux-musl/release
             name: linux
+            tar: tar
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary_path: target/x86_64-unknown-linux-gnu/release
             name: linux-gnu
+            tar: tar
     steps:
     - uses: actions/checkout@v2
 
@@ -78,22 +85,83 @@ jobs:
       if: contains(matrix.os, 'macos')
 
     - name: Create tarball of binaries
-      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
+      run: ${{ matrix.tar }} -zcC ${{ matrix.binary_path }} -f binaries.tar.gz icx-proxy
 
-    - name: Upload tarball
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: binaries.tar.gz
-        asset_name: binaries-${{ matrix.name }}.tar.gz
-        tag: ${{ env.SHA_SHORT }}
+    - name: Inspect input binary and tarball contents
+      run: |
+        hexdump -C ${{ matrix.binary_path }}/icx-proxy | head
+        hexdump -C ${{ matrix.binary_path }}/icx-proxy | tail
+        ${{ matrix.binary_path }}/icx-proxy --help
+        
+        ARCHIVE="$(pwd)/binaries.tar.gz"
+        cd "$(mktemp -d)"
+        ${{ matrix.tar }} --version
+        ${{ matrix.tar }} -xzvf "$ARCHIVE"
+        ls -l icx-proxy
+        hexdump -C icx-proxy | head
+        hexdump -C icx-proxy | tail
+        ./icx-proxy --help
 
-    - name: Upload deb
-      uses: svenstaro/upload-release-action@v2
+    - name: Upload tarball artifact
+      uses: actions/upload-artifact@v2
       with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb
-        asset_name: icx-proxy.deb
-        tag: ${{ env.SHA_SHORT }}
+        name: tarball-${{ matrix.name }}
+        path: binaries.tar.gz
+    - name: Copy deb artifact
+      run: cp target/x86_64-unknown-linux-musl/debian/icx-proxy_${{ env.ICX_VERSION }}_amd64.deb icx-proxy.deb
       if: contains(matrix.target, 'linux-musl')
+    - name: Upload deb artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: deb-${{ matrix.name }}
+        path: icx-proxy.deb
+      if: contains(matrix.target, 'linux-musl')
+
+  upload:
+    runs-on: ${{ matrix.os }}
+    needs: [ build ]
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [ '1.55.0' ]
+        target: [ x86_64-apple-darwin, x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu ]
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: linux
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-gnu
+    steps:
+      - name: Setup environment variables
+        run: echo "SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: tarball-${{ matrix.name }}
+      - name: Download deb artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: deb-${{ matrix.name }}
+        if: contains(matrix.target, 'linux-musl')
+
+      - name: Upload tarball
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: binaries.tar.gz
+          asset_name: binaries-${{ matrix.name }}.tar.gz
+          tag: ${{ env.SHA_SHORT }}
+
+      - name: Upload deb
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: icx-proxy.deb
+          tag: ${{ env.SHA_SHORT }}
+        if: contains(matrix.target, 'linux-musl')
 

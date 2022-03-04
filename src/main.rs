@@ -814,14 +814,14 @@ async fn handle_request(
     debug: bool,
 ) -> Result<Response<Body>, Infallible> {
     let request_uri_path = request.uri().path();
-    match if request_uri_path.starts_with("/api/") {
+    let result = if request_uri_path.starts_with("/api/") {
         slog::debug!(
             logger,
             "URI Request to path '{}' being forwarded to Replica",
             &request.uri().path()
         );
         forward_api(&ip_addr, request, &replica_url).await
-    } else if request_uri_path.starts_with("/_/") {
+    } else if request_uri_path.starts_with("/_/") && !request_uri_path.starts_with("/_/raw") {
         if let Some(proxy_url) = proxy_url {
             slog::debug!(
                 logger,
@@ -849,7 +849,9 @@ async fn handle_request(
         } else {
             forward_request(request, agent, dns_canister_config.as_ref(), logger.clone()).await
         }
-    } {
+    };
+
+    match result {
         Err(err) => {
             slog::warn!(logger, "Internal Error during request:\n{:#?}", err);
 
