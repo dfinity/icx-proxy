@@ -42,13 +42,14 @@ mod config;
 mod logging;
 
 // Limit the total number of calls to an HTTP Request loop to 1000 for now.
-static MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
+const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
 
 // The maximum length of a body we should log as tracing.
-static MAX_LOG_BODY_SIZE: usize = 100;
+const MAX_LOG_BODY_SIZE: usize = 100;
 
 // The limit of a buffer we should decompress ~10mb.
-static MAX_BYTES_SIZE_TO_DECOMPRESS: u64 = 10_000_000;
+const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
+const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
 
 #[derive(Parser)]
 #[clap(
@@ -379,8 +380,7 @@ async fn forward_request(
         None
     };
     let is_streaming = http_response.streaming_strategy.is_some();
-    let response = if is_streaming {
-        let streaming_strategy = http_response.streaming_strategy.unwrap();
+    let response = if let Some(streaming_strategy) = http_response.streaming_strategy {
         let (mut sender, body) = body::Body::channel();
         let agent = agent.as_ref().clone();
         sender.send_data(Bytes::from(http_response.body)).await?;
@@ -491,8 +491,17 @@ fn validate(
     response_body: &[u8],
     logger: slog::Logger,
 ) -> Result<(), String> {
-    let body_sha = decode_body(response_body, headers_data.encoding.clone());
-    let body_valid = match (headers_data.certificate.clone(), headers_data.tree.clone()) {
+    let body_sha = if let Some(body_sha) = decode_body(response_body, headers_data.encoding.clone())
+    {
+        body_sha
+    } else {
+        return Err("Body could not be decoded".into());
+    };
+
+    let body_valid = match (
+        headers_data.certificate.as_ref(),
+        headers_data.tree.as_ref(),
+    ) {
         (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
             Certificates { certificate, tree },
             canister_id,
@@ -522,38 +531,48 @@ fn validate(
     Ok(())
 }
 
-fn decode_body(body: &[u8], encoding: Option<String>) -> [u8; 32] {
+fn decode_body(body: &[u8], encoding: Option<String>) -> Option<[u8; 32]> {
     let mut sha256 = Sha256::new();
-    match encoding {
-        Some(enc) => match enc.as_str() {
-            "gzip" => {
-                let decoded: &mut Vec<u8> = &mut vec![];
-                let decoder = GzDecoder::new(body);
-                decoder
-                    .take(MAX_BYTES_SIZE_TO_DECOMPRESS)
-                    .read_to_end(decoded)
-                    .unwrap();
-                sha256.update(decoded);
+    let mut decoded = [0u8; MAX_CHUNK_SIZE_TO_DECOMPRESS];
+    match encoding.as_ref().map(String::as_str) {
+        Some("gzip") => {
+            let mut decoder = GzDecoder::new(body);
+            for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
+                let bytes = decoder.read(&mut decoded).ok()?;
+                sha256.update(&decoded[0..bytes]);
+                if bytes < MAX_CHUNK_SIZE_TO_DECOMPRESS {
+                    return Some(sha256.finalize().into());
+                }
             }
-            "deflate" => {
-                let decoded: &mut Vec<u8> = &mut vec![];
-                let decoder = DeflateDecoder::new(body);
-                decoder
-                    .take(MAX_BYTES_SIZE_TO_DECOMPRESS)
-                    .read_to_end(decoded)
-                    .unwrap();
-                sha256.update(decoded);
+            if decoder.bytes().next().is_some() {
+                return None;
+            } else {
+                return Some(sha256.finalize().into());
             }
-            _ => sha256.update(body),
-        },
+        }
+        Some("deflate") => {
+            let mut decoder = DeflateDecoder::new(body);
+            for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
+                let bytes = decoder.read(&mut decoded).ok()?;
+                sha256.update(&decoded[0..bytes]);
+                if bytes < MAX_CHUNK_SIZE_TO_DECOMPRESS {
+                    return Some(sha256.finalize().into());
+                }
+            }
+            if decoder.bytes().next().is_some() {
+                return None;
+            } else {
+                return Some(sha256.finalize().into());
+            }
+        }
         _ => sha256.update(body),
     };
-    sha256.finalize().into()
+    Some(sha256.finalize().into())
 }
 
-struct Certificates {
-    certificate: Vec<u8>,
-    tree: Vec<u8>,
+struct Certificates<'a> {
+    certificate: &'a Vec<u8>,
+    tree: &'a Vec<u8>,
 }
 
 fn validate_body(
@@ -565,9 +584,9 @@ fn validate_body(
     logger: slog::Logger,
 ) -> anyhow::Result<bool> {
     let cert: Certificate =
-        serde_cbor::from_slice(&certificates.certificate).map_err(AgentError::InvalidCborData)?;
+        serde_cbor::from_slice(certificates.certificate).map_err(AgentError::InvalidCborData)?;
     let tree: HashTree =
-        serde_cbor::from_slice(&certificates.tree).map_err(AgentError::InvalidCborData)?;
+        serde_cbor::from_slice(certificates.tree).map_err(AgentError::InvalidCborData)?;
 
     if let Err(e) = agent.verify(&cert) {
         slog::trace!(logger, ">> certificate failed verification: {}", e);
