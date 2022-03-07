@@ -534,7 +534,7 @@ fn validate(
 fn decode_body(body: &[u8], encoding: Option<String>) -> Option<[u8; 32]> {
     let mut sha256 = Sha256::new();
     let mut decoded = [0u8; MAX_CHUNK_SIZE_TO_DECOMPRESS];
-    match encoding.as_ref().map(String::as_str) {
+    match encoding.as_deref() {
         Some("gzip") => {
             let mut decoder = GzDecoder::new(body);
             for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
