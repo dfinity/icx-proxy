@@ -25,10 +25,10 @@ use ic_utils::{
 use lazy_regex::regex_captures;
 use sha2::{Digest, Sha256};
 use slog::Drain;
-use std::io::prelude::Read;
 use std::{
     convert::Infallible,
     error::Error,
+    io::Read,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
