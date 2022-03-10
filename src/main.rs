@@ -491,7 +491,7 @@ fn validate(
     response_body: &[u8],
     logger: slog::Logger,
 ) -> Result<(), String> {
-    let body_sha = if let Some(body_sha) = decode_body(response_body, headers_data.encoding.clone())
+    let body_sha = if let Some(body_sha) = decode_body_to_sha256(response_body, headers_data.encoding.clone())
     {
         body_sha
     } else {
@@ -531,7 +531,7 @@ fn validate(
     Ok(())
 }
 
-fn decode_body(body: &[u8], encoding: Option<String>) -> Option<[u8; 32]> {
+fn decode_body_to_sha256(body: &[u8], encoding: Option<String>) -> Option<[u8; 32]> {
     let mut sha256 = Sha256::new();
     let mut decoded = [0u8; MAX_CHUNK_SIZE_TO_DECOMPRESS];
     match encoding.as_deref() {
