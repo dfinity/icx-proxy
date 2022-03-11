@@ -455,13 +455,11 @@ async fn forward_request(
                                 token,
                                 chunk_tree,
                             },)) => {
-                                let decoded_chunk_tree =
-                                    decode_hash_tree("chunk_tree", chunk_tree, &logger);
                                 let chunk_headers_data = HeadersData {
                                     certificate: headers_data.certificate.clone(),
                                     tree: headers_data.tree.clone(),
                                     encoding: headers_data.encoding.clone(),
-                                    chunk_tree: decoded_chunk_tree.ok(),
+                                    chunk_tree,
                                     chunk_index: chunk_index.clone(),
                                 };
                                 let body_valid = validate(
