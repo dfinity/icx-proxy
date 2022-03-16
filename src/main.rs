@@ -1,5 +1,5 @@
 use crate::config::dns_canister_config::DnsCanisterConfig;
-use clap::{crate_authors, crate_version, AppSettings, Parser};
+use clap::{crate_authors, crate_version, Parser};
 use hyper::{
     body,
     body::Bytes,
@@ -49,7 +49,7 @@ static MAX_LOG_BODY_SIZE: usize = 100;
 #[clap(
     version = crate_version!(),
     author = crate_authors!(),
-    global_setting = AppSettings::PropagateVersion,
+    propagate_version = true,
 )]
 pub(crate) struct Opts {
     /// Verbose level. By default, INFO will be used. Add a single `-v` to upgrade to
