@@ -207,7 +207,14 @@ fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> Heade
         if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
             for field in value.split(',') {
                 if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
-                    slog::trace!(logger, ">> certificate {:.l1$}: {:.l2$}", name, b64_value, l1=MAX_LOG_CERT_NAME_SIZE, l2=MAX_LOG_CERT_B64_SIZE);
+                    slog::trace!(
+                        logger,
+                        ">> certificate {:.l1$}: {:.l2$}",
+                        name,
+                        b64_value,
+                        l1 = MAX_LOG_CERT_NAME_SIZE,
+                        l2 = MAX_LOG_CERT_B64_SIZE
+                    );
                     let bytes = decode_hash_tree(name, Some(b64_value.to_string()), logger);
                     if name == "certificate" {
                         headers_data.certificate = Some(match (headers_data.certificate, bytes) {
@@ -493,7 +500,8 @@ fn validate(
     response_body: &[u8],
     logger: slog::Logger,
 ) -> Result<(), String> {
-    let body_sha = if let Some(body_sha) = decode_body_to_sha256(response_body, headers_data.encoding.clone())
+    let body_sha = if let Some(body_sha) =
+        decode_body_to_sha256(response_body, headers_data.encoding.clone())
     {
         body_sha
     } else {
