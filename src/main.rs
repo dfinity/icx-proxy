@@ -46,6 +46,8 @@ const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
 
 // The maximum length of a body we should log as tracing.
 const MAX_LOG_BODY_SIZE: usize = 100;
+const MAX_LOG_CERT_NAME_SIZE: usize = 100;
+const MAX_LOG_CERT_B64_SIZE: usize = 2000;
 
 // The limit of a buffer we should decompress ~10mb.
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
@@ -205,7 +207,7 @@ fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> Heade
         if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
             for field in value.split(',') {
                 if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
-                    slog::trace!(logger, ">> certificate {}: {}", name, b64_value);
+                    slog::trace!(logger, ">> certificate {:.l1$}: {:.l2$}", name, b64_value, l1=MAX_LOG_CERT_NAME_SIZE, l2=MAX_LOG_CERT_B64_SIZE);
                     let bytes = decode_hash_tree(name, Some(b64_value.to_string()), logger);
                     if name == "certificate" {
                         headers_data.certificate = Some(match (headers_data.certificate, bytes) {
@@ -520,7 +522,10 @@ fn validate(
             Err(e) => Err(format!("Certificate validation failed: {}", e)),
         },
         (Some(_), _) | (_, Some(_)) => Err("Body does not pass verification".to_string()),
+
+        // TODO: Remove this (FOLLOW-483)
         // Canisters don't have to provide certified variables
+        // This should change in the future, grandfathering in current implementations
         (None, None) => Ok(()),
     };
 
