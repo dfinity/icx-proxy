@@ -57,7 +57,7 @@ const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
 #[clap(
     version = crate_version!(),
     author = crate_authors!(),
-    global_setting = AppSettings::PropagateVersion,
+    propagate_version = true,
 )]
 pub(crate) struct Opts {
     /// Verbose level. By default, INFO will be used. Add a single `-v` to upgrade to
