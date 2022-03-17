@@ -1,5 +1,6 @@
 use crate::config::dns_canister_config::DnsCanisterConfig;
-use clap::{crate_authors, crate_version, Parser};
+use clap::{crate_authors, crate_version, AppSettings, Parser};
+use flate2::read::{DeflateDecoder, GzDecoder};
 use hyper::{
     body,
     body::Bytes,
@@ -27,6 +28,7 @@ use slog::Drain;
 use std::{
     convert::Infallible,
     error::Error,
+    io::Read,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
@@ -40,10 +42,16 @@ mod config;
 mod logging;
 
 // Limit the total number of calls to an HTTP Request loop to 1000 for now.
-static MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
+const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
 
 // The maximum length of a body we should log as tracing.
-static MAX_LOG_BODY_SIZE: usize = 100;
+const MAX_LOG_BODY_SIZE: usize = 100;
+const MAX_LOG_CERT_NAME_SIZE: usize = 100;
+const MAX_LOG_CERT_B64_SIZE: usize = 2000;
+
+// The limit of a buffer we should decompress ~10mb.
+const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
+const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
 
 #[derive(Parser)]
 #[clap(
@@ -169,6 +177,95 @@ fn resolve_canister_id(
     None
 }
 
+fn decode_hash_tree(
+    name: &str,
+    value: Option<String>,
+    logger: &slog::Logger,
+) -> Result<Vec<u8>, ()> {
+    match value {
+        Some(tree) => base64::decode(tree).map_err(|e| {
+            slog::warn!(logger, "Unable to decode {} from base64: {}", name, e);
+        }),
+        _ => Err(()),
+    }
+}
+
+struct HeadersData {
+    certificate: Option<Result<Vec<u8>, ()>>,
+    tree: Option<Result<Vec<u8>, ()>>,
+    encoding: Option<String>,
+}
+
+fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> HeadersData {
+    let mut headers_data = HeadersData {
+        certificate: None,
+        tree: None,
+        encoding: None,
+    };
+
+    for HeaderField(name, value) in headers {
+        if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
+            for field in value.split(',') {
+                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
+                    slog::trace!(
+                        logger,
+                        ">> certificate {:.l1$}: {:.l2$}",
+                        name,
+                        b64_value,
+                        l1 = MAX_LOG_CERT_NAME_SIZE,
+                        l2 = MAX_LOG_CERT_B64_SIZE
+                    );
+                    let bytes = decode_hash_tree(name, Some(b64_value.to_string()), logger);
+                    if name == "certificate" {
+                        headers_data.certificate = Some(match (headers_data.certificate, bytes) {
+                            (None, bytes) => bytes,
+                            (Some(Ok(certificate)), Ok(bytes)) => {
+                                slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
+                                Ok(certificate)
+                            }
+                            (Some(Ok(certificate)), Err(_)) => {
+                                slog::warn!(
+                                    logger,
+                                    "duplicate certificate field (failed to decode)"
+                                );
+                                Ok(certificate)
+                            }
+                            (Some(Err(_)), bytes) => {
+                                slog::warn!(
+                                    logger,
+                                    "duplicate certificate field (failed to decode)"
+                                );
+                                bytes
+                            }
+                        });
+                    } else if name == "tree" {
+                        headers_data.tree = Some(match (headers_data.tree, bytes) {
+                            (None, bytes) => bytes,
+                            (Some(Ok(tree)), Ok(bytes)) => {
+                                slog::warn!(logger, "duplicate tree field: {:?}", bytes);
+                                Ok(tree)
+                            }
+                            (Some(Ok(tree)), Err(_)) => {
+                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                Ok(tree)
+                            }
+                            (Some(Err(_)), bytes) => {
+                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                bytes
+                            }
+                        });
+                    }
+                }
+            }
+        } else if name.eq_ignore_ascii_case("CONTENT-ENCODING") {
+            let enc = value.trim().to_string();
+            headers_data.encoding = Some(enc);
+        }
+    }
+
+    headers_data
+}
+
 async fn forward_request(
     request: Request<Body>,
     agent: Arc<Agent>,
@@ -280,69 +377,12 @@ async fn forward_request(
         http_response
     };
 
-    let mut certificate: Option<Result<Vec<u8>, ()>> = None;
-    let mut tree: Option<Result<Vec<u8>, ()>> = None;
-
     let mut builder = Response::builder().status(StatusCode::from_u16(http_response.status_code)?);
-    for HeaderField(name, value) in http_response.headers {
-        if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
-            for field in value.split(',') {
-                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
-                    slog::trace!(logger, ">> certificate {}: {}", name, b64_value);
-                    let bytes = base64::decode(b64_value).map_err(|e| {
-                        slog::warn!(
-                            logger,
-                            "Unable to decode {} in ic-certificate from base64: {}",
-                            name,
-                            e
-                        );
-                    });
-                    if name == "certificate" {
-                        certificate = Some(match (certificate, bytes) {
-                            (None, bytes) => bytes,
-                            (Some(Ok(certificate)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
-                                Ok(certificate)
-                            }
-                            (Some(Ok(certificate)), Err(_)) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
-                                Ok(certificate)
-                            }
-                            (Some(Err(_)), bytes) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
-                                bytes
-                            }
-                        });
-                    } else if name == "tree" {
-                        tree = Some(match (tree, bytes) {
-                            (None, bytes) => bytes,
-                            (Some(Ok(tree)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate tree field: {:?}", bytes);
-                                Ok(tree)
-                            }
-                            (Some(Ok(tree)), Err(_)) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
-                                Ok(tree)
-                            }
-                            (Some(Err(_)), bytes) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
-                                bytes
-                            }
-                        });
-                    }
-                }
-            }
-        }
-
-        builder = builder.header(&name, value);
+    for HeaderField(name, value) in &http_response.headers {
+        builder = builder.header(name, value);
     }
 
+    let headers_data = extract_headers_data(&http_response.headers, &logger);
     let body = if logger.is_trace_enabled() {
         Some(http_response.body.clone())
     } else {
@@ -400,33 +440,18 @@ async fn forward_request(
 
         builder.body(body)?
     } else {
-        let body_valid = match (certificate, tree) {
-            (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
-                &certificate,
-                &tree,
-                &canister_id,
-                &agent,
-                &uri,
-                &http_response.body,
-                logger.clone(),
-            ) {
-                Ok(valid) => valid,
-                Err(e) => {
-                    return Ok(Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(format!("Certificate validation failed: {}", e).into())
-                        .unwrap());
-                }
-            },
-            (Some(_), _) | (_, Some(_)) => false,
-            // Canisters don't have to provide certified variables
-            (None, None) => true,
-        };
-
-        if !body_valid && !cfg!(feature = "skip_body_verification") {
+        let body_valid = validate(
+            &headers_data,
+            &canister_id,
+            &agent,
+            &uri,
+            &http_response.body,
+            logger.clone(),
+        );
+        if body_valid.is_err() {
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body("Body does not pass verification".into())
+                .body(body_valid.unwrap_err().into())
                 .unwrap());
         }
         builder.body(http_response.body.into())?
@@ -467,18 +492,114 @@ async fn forward_request(
     Ok(response)
 }
 
-fn validate_body(
-    certificate: &[u8],
-    tree: &[u8],
+fn validate(
+    headers_data: &HeadersData,
     canister_id: &Principal,
     agent: &Agent,
     uri: &Uri,
     response_body: &[u8],
     logger: slog::Logger,
+) -> Result<(), String> {
+    let body_sha = if let Some(body_sha) =
+        decode_body_to_sha256(response_body, headers_data.encoding.clone())
+    {
+        body_sha
+    } else {
+        return Err("Body could not be decoded".into());
+    };
+
+    let body_valid = match (
+        headers_data.certificate.as_ref(),
+        headers_data.tree.as_ref(),
+    ) {
+        (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
+            Certificates { certificate, tree },
+            canister_id,
+            agent,
+            uri,
+            &body_sha,
+            logger.clone(),
+        ) {
+            Ok(valid) => {
+                if valid {
+                    Ok(())
+                } else {
+                    Err("Body does not pass verification".to_string())
+                }
+            }
+            Err(e) => Err(format!("Certificate validation failed: {}", e)),
+        },
+        (Some(_), _) | (_, Some(_)) => Err("Body does not pass verification".to_string()),
+
+        // TODO: Remove this (FOLLOW-483)
+        // Canisters don't have to provide certified variables
+        // This should change in the future, grandfathering in current implementations
+        (None, None) => Ok(()),
+    };
+
+    if body_valid.is_err() && !cfg!(feature = "skip_body_verification") {
+        return body_valid;
+    }
+
+    Ok(())
+}
+
+fn decode_body_to_sha256(body: &[u8], encoding: Option<String>) -> Option<[u8; 32]> {
+    let mut sha256 = Sha256::new();
+    let mut decoded = [0u8; MAX_CHUNK_SIZE_TO_DECOMPRESS];
+    match encoding.as_deref() {
+        Some("gzip") => {
+            let mut decoder = GzDecoder::new(body);
+            for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
+                let bytes = decoder.read(&mut decoded).ok()?;
+                sha256.update(&decoded[0..bytes]);
+                if bytes < MAX_CHUNK_SIZE_TO_DECOMPRESS {
+                    return Some(sha256.finalize().into());
+                }
+            }
+            if decoder.bytes().next().is_some() {
+                return None;
+            } else {
+                return Some(sha256.finalize().into());
+            }
+        }
+        Some("deflate") => {
+            let mut decoder = DeflateDecoder::new(body);
+            for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
+                let bytes = decoder.read(&mut decoded).ok()?;
+                sha256.update(&decoded[0..bytes]);
+                if bytes < MAX_CHUNK_SIZE_TO_DECOMPRESS {
+                    return Some(sha256.finalize().into());
+                }
+            }
+            if decoder.bytes().next().is_some() {
+                return None;
+            } else {
+                return Some(sha256.finalize().into());
+            }
+        }
+        _ => sha256.update(body),
+    };
+    Some(sha256.finalize().into())
+}
+
+struct Certificates<'a> {
+    certificate: &'a Vec<u8>,
+    tree: &'a Vec<u8>,
+}
+
+fn validate_body(
+    certificates: Certificates,
+    canister_id: &Principal,
+    agent: &Agent,
+    uri: &Uri,
+    body_sha: &[u8; 32],
+    logger: slog::Logger,
 ) -> anyhow::Result<bool> {
     let cert: Certificate =
-        serde_cbor::from_slice(certificate).map_err(AgentError::InvalidCborData)?;
-    let tree: HashTree = serde_cbor::from_slice(tree).map_err(AgentError::InvalidCborData)?;
+        serde_cbor::from_slice(certificates.certificate).map_err(AgentError::InvalidCborData)?;
+    let tree: HashTree =
+        serde_cbor::from_slice(certificates.tree).map_err(AgentError::InvalidCborData)?;
 
     if let Err(e) = agent.verify(&cert) {
         slog::trace!(logger, ">> certificate failed verification: {}", e);
@@ -530,11 +651,7 @@ fn validate_body(
         },
     };
 
-    let mut sha256 = Sha256::new();
-    sha256.update(response_body);
-    let body_sha = sha256.finalize();
-
-    Ok(&body_sha[..] == tree_sha)
+    Ok(body_sha == tree_sha)
 }
 
 fn is_hop_header(name: &str) -> bool {
