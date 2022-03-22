@@ -173,7 +173,33 @@ dependencies = [
  "anyhow",
  "binread",
  "byteorder",
- "candid_derive",
+ "candid_derive 0.4.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "codespan-reporting",
+ "hex",
+ "ic-types",
+ "lalrpop",
+ "lalrpop-util",
+ "leb128",
+ "logos",
+ "num-bigint",
+ "num-traits",
+ "num_enum",
+ "paste",
+ "pretty",
+ "serde",
+ "serde_bytes",
+ "thiserror",
+]
+
+[[package]]
+name = "candid"
+version = "0.7.13"
+source = "git+https://github.com/Daniel-Bloom-dfinity/candid/?branch=dbloom/func#dc54ad434feca415f1eaae7099e9df4289286185"
+dependencies = [
+ "anyhow",
+ "binread",
+ "byteorder",
+ "candid_derive 0.4.5 (git+https://github.com/Daniel-Bloom-dfinity/candid/?branch=dbloom/func)",
  "codespan-reporting",
  "hex",
  "ic-types",
@@ -196,6 +222,17 @@ name = "candid_derive"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e02c03c4d547674a3f3f3109538fb49871fbe636216daa019f06a62faca9061"
+dependencies = [
+ "lazy_static",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "candid_derive"
+version = "0.4.5"
+source = "git+https://github.com/Daniel-Bloom-dfinity/candid/?branch=dbloom/func#dc54ad434feca415f1eaae7099e9df4289286185"
 dependencies = [
  "lazy_static",
  "proc-macro2",
@@ -693,9 +730,8 @@ dependencies = [
 
 [[package]]
 name = "ic-agent"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9bf8e07a0491c6ba8d78b78c283c9146108d0fea475d3b665c337dba5fd4ce5"
+version = "0.14.0"
+source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#7c9a3d892a8bcfde9c94ff431f17708da106a92e"
 dependencies = [
  "async-trait",
  "base32",
@@ -739,12 +775,11 @@ dependencies = [
 
 [[package]]
 name = "ic-utils"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3362a744eb73e5a05d058069e10a0747fa25c2b008a54cfe234b8db4ea50eb3c"
+version = "0.15.0"
+source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#7c9a3d892a8bcfde9c94ff431f17708da106a92e"
 dependencies = [
  "async-trait",
- "candid",
+ "candid 0.7.13",
  "garcon",
  "ic-agent",
  "leb128",
@@ -763,7 +798,7 @@ version = "0.8.1"
 dependencies = [
  "anyhow",
  "base64",
- "candid",
+ "candid 0.7.12",
  "clap",
  "flate2",
  "garcon",

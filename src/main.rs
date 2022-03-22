@@ -1,5 +1,5 @@
 use crate::config::dns_canister_config::DnsCanisterConfig;
-use clap::{crate_authors, crate_version, AppSettings, Parser};
+use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
 use hyper::{
     body,
@@ -18,8 +18,8 @@ use ic_utils::{
     call::AsyncCall,
     call::SyncCall,
     interfaces::http_request::{
-        HeaderField, HttpRequestCanister, HttpResponse, StreamingCallbackHttpResponse,
-        StreamingStrategy,
+        HeaderField, HttpRequestCanister, HttpResponse, StreamingCallbackHttpResponse, HttpRequestStreamingCallbackAny,
+        StreamingStrategy, Token,
     },
 };
 use lazy_regex::regex_captures;
@@ -40,6 +40,8 @@ use std::{
 
 mod config;
 mod logging;
+
+type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
 // Limit the total number of calls to an HTTP Request loop to 1000 for now.
 const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
@@ -290,15 +292,15 @@ async fn forward_request(
         &request.version()
     );
 
-    let method = request.method().to_string();
-    let uri = request.uri().clone();
-    let headers = request
-        .headers()
-        .into_iter()
+    let (parts, body) = request.into_parts();
+    let method = parts.method;
+    let uri = parts.uri.to_string();
+    let headers = parts.headers
+        .iter()
         .filter_map(|(name, value)| {
             Some(HeaderField(
-                name.to_string(),
-                value.to_str().ok()?.to_string(),
+                name.as_str().into(),
+                value.to_str().ok()?.into(),
             ))
         })
         .inspect(|HeaderField(name, value)| {
@@ -306,7 +308,7 @@ async fn forward_request(
         })
         .collect::<Vec<_>>();
 
-    let entire_body = body::to_bytes(request.into_body()).await?.to_vec();
+    let entire_body = body::to_bytes(body).await?.to_vec();
 
     slog::trace!(logger, "<<");
     if logger.is_trace_enabled() {
@@ -327,18 +329,18 @@ async fn forward_request(
 
     let canister = HttpRequestCanister::create(agent.as_ref(), canister_id);
     let query_result = canister
-        .http_request(
-            method.clone(),
-            uri.to_string(),
-            headers.clone(),
+        .http_request_custom(
+            method.as_str(),
+            uri.as_str(),
+            &headers,
             &entire_body,
         )
         .call()
         .await;
 
     fn handle_result(
-        result: Result<(HttpResponse,), AgentError>,
-    ) -> Result<HttpResponse, Result<Response<Body>, Box<dyn Error>>> {
+        result: Result<(HttpResponseAny,), AgentError>,
+    ) -> Result<HttpResponseAny, Result<Response<Body>, Box<dyn Error>>> {
         // If the result is a Replica error, returns the 500 code and message. There is no information
         // leak here because a user could use `dfx` to get the same reply.
         match result {
@@ -365,7 +367,7 @@ async fn forward_request(
             .timeout(std::time::Duration::from_secs(15))
             .build();
         let update_result = canister
-            .http_request_update(method, uri.to_string(), headers, &entire_body)
+            .http_request_update_custom(method.as_str(), uri.as_str(), &headers, &entire_body)
             .call_and_wait(waiter)
             .await;
         let http_response = match handle_result(update_result) {
@@ -379,7 +381,7 @@ async fn forward_request(
 
     let mut builder = Response::builder().status(StatusCode::from_u16(http_response.status_code)?);
     for HeaderField(name, value) in &http_response.headers {
-        builder = builder.header(name, value);
+        builder = builder.header(name.as_ref(), value.as_ref());
     }
 
     let headers_data = extract_headers_data(&http_response.headers, &logger);
@@ -396,12 +398,12 @@ async fn forward_request(
 
         match streaming_strategy {
             StreamingStrategy::Callback(callback) => {
-                let streaming_canister_id_id = callback.callback.principal;
-                let method_name = callback.callback.method;
+                let streaming_canister_id = callback.callback.0.principal;
+                let method_name = callback.callback.0.method;
                 let mut callback_token = callback.token;
                 let logger = logger.clone();
                 tokio::spawn(async move {
-                    let canister = HttpRequestCanister::create(&agent, streaming_canister_id_id);
+                    let canister = HttpRequestCanister::create(&agent, streaming_canister_id);
                     // We have not yet called http_request_stream_callback.
                     let mut count = 0;
                     loop {
@@ -444,7 +446,7 @@ async fn forward_request(
             &headers_data,
             &canister_id,
             &agent,
-            &uri,
+            &parts.uri,
             &http_response.body,
             logger.clone(),
         );
@@ -520,13 +522,8 @@ fn validate(
             &body_sha,
             logger.clone(),
         ) {
-            Ok(valid) => {
-                if valid {
-                    Ok(())
-                } else {
-                    Err("Body does not pass verification".to_string())
-                }
-            }
+            Ok(true) => Ok(()),
+            Ok(false) => Err("Body does not pass verification".to_string()),
             Err(e) => Err(format!("Certificate validation failed: {}", e)),
         },
         (Some(_), _) | (_, Some(_)) => Err("Body does not pass verification".to_string()),
@@ -552,30 +549,26 @@ fn decode_body_to_sha256(body: &[u8], encoding: Option<String>) -> Option<[u8; 3
             let mut decoder = GzDecoder::new(body);
             for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
                 let bytes = decoder.read(&mut decoded).ok()?;
-                sha256.update(&decoded[0..bytes]);
-                if bytes < MAX_CHUNK_SIZE_TO_DECOMPRESS {
+                if bytes == 0 {
                     return Some(sha256.finalize().into());
                 }
+                sha256.update(&decoded[0..bytes]);
             }
             if decoder.bytes().next().is_some() {
                 return None;
-            } else {
-                return Some(sha256.finalize().into());
             }
         }
         Some("deflate") => {
             let mut decoder = DeflateDecoder::new(body);
             for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
                 let bytes = decoder.read(&mut decoded).ok()?;
-                sha256.update(&decoded[0..bytes]);
-                if bytes < MAX_CHUNK_SIZE_TO_DECOMPRESS {
+                if bytes == 0 {
                     return Some(sha256.finalize().into());
                 }
+                sha256.update(&decoded[0..bytes]);
             }
             if decoder.bytes().next().is_some() {
                 return None;
-            } else {
-                return Some(sha256.finalize().into());
             }
         }
         _ => sha256.update(body),
@@ -601,7 +594,7 @@ fn validate_body(
     let tree: HashTree =
         serde_cbor::from_slice(certificates.tree).map_err(AgentError::InvalidCborData)?;
 
-    if let Err(e) = agent.verify(&cert) {
+    if let Err(e) = agent.verify(&cert, *canister_id, false) {
         slog::trace!(logger, ">> certificate failed verification: {}", e);
         return Ok(false);
     }
