@@ -730,8 +730,8 @@ dependencies = [
 
 [[package]]
 name = "ic-agent"
-version = "0.14.0"
-source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#7c9a3d892a8bcfde9c94ff431f17708da106a92e"
+version = "0.15.0"
+source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#8da624bd4d6c407d948db4623841e2b3ff3abfc4"
 dependencies = [
  "async-trait",
  "base32",
@@ -776,7 +776,7 @@ dependencies = [
 [[package]]
 name = "ic-utils"
 version = "0.15.0"
-source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#7c9a3d892a8bcfde9c94ff431f17708da106a92e"
+source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#8da624bd4d6c407d948db4623841e2b3ff3abfc4"
 dependencies = [
  "async-trait",
  "candid 0.7.13",

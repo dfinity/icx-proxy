@@ -18,8 +18,8 @@ use ic_utils::{
     call::AsyncCall,
     call::SyncCall,
     interfaces::http_request::{
-        HeaderField, HttpRequestCanister, HttpResponse, StreamingCallbackHttpResponse, HttpRequestStreamingCallbackAny,
-        StreamingStrategy, Token,
+        HeaderField, HttpRequestCanister, HttpRequestStreamingCallbackAny, HttpResponse,
+        StreamingCallbackHttpResponse, StreamingStrategy, Token,
     },
 };
 use lazy_regex::regex_captures;
@@ -295,7 +295,8 @@ async fn forward_request(
     let (parts, body) = request.into_parts();
     let method = parts.method;
     let uri = parts.uri.to_string();
-    let headers = parts.headers
+    let headers = parts
+        .headers
         .iter()
         .filter_map(|(name, value)| {
             Some(HeaderField(
@@ -332,7 +333,7 @@ async fn forward_request(
         .http_request_custom(
             method.as_str(),
             uri.as_str(),
-            &headers,
+            headers.iter().cloned(),
             &entire_body,
         )
         .call()
@@ -367,7 +368,12 @@ async fn forward_request(
             .timeout(std::time::Duration::from_secs(15))
             .build();
         let update_result = canister
-            .http_request_update_custom(method.as_str(), uri.as_str(), &headers, &entire_body)
+            .http_request_update_custom(
+                method.as_str(),
+                uri.as_str(),
+                headers.iter().cloned(),
+                &entire_body,
+            )
             .call_and_wait(waiter)
             .await;
         let http_response = match handle_result(update_result) {
