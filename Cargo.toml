@@ -19,7 +19,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 base64 = "0.13"
-candid = { version = "0.7", features = ["mute_warnings"] }
+#candid = { version = "0.7", features = ["mute_warnings"] }
+candid = { version = "0.7", features = ["mute_warnings"], git = "https://github.com/Daniel-Bloom-dfinity/candid", branch = "dbloom/bump" }
 clap = { version = "3", features = ["cargo", "derive"] }
 flate2 = "1.0.0"
 garcon = { version = "0.2", features = ["async"] }
@@ -28,6 +29,8 @@ hyper = { version = "0.14", features = ["full"] }
 hyper-tls = "0.5"
 ic-agent = { version = "0.15", git = "https://github.com/Daniel-Bloom-dfinity/agent-rs", branch = "dbloom/callback" }
 ic-utils = { version = "0.15", features = ["raw"], git = "https://github.com/Daniel-Bloom-dfinity/agent-rs", branch = "dbloom/callback" }
+#ic-agent = { version = "0.15" }
+#ic-utils = { version = "0.15", features = ["raw"], path = "../agent-rs/ic-utils" }
 lazy-regex = "2"
 tokio = { version = "1", features = ["full"] }
 serde = "1"

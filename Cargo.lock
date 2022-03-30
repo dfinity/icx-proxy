@@ -166,40 +166,13 @@ checksum = "c4872d67bab6358e59559027aa3b9157c53d9358c51423c17554809a8858e0f8"
 
 [[package]]
 name = "candid"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5d4dbc61f5125dab4168ce321c559aaca5511c2915ccb531e212b1c8d199d8"
+version = "0.7.14"
+source = "git+https://github.com/Daniel-Bloom-dfinity/candid?branch=dbloom/bump#74398af80aafbebb19e69741ac31a77b21518b0e"
 dependencies = [
  "anyhow",
  "binread",
  "byteorder",
- "candid_derive 0.4.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "codespan-reporting",
- "hex",
- "ic-types",
- "lalrpop",
- "lalrpop-util",
- "leb128",
- "logos",
- "num-bigint",
- "num-traits",
- "num_enum",
- "paste",
- "pretty",
- "serde",
- "serde_bytes",
- "thiserror",
-]
-
-[[package]]
-name = "candid"
-version = "0.7.13"
-source = "git+https://github.com/Daniel-Bloom-dfinity/candid/?branch=dbloom/func#dc54ad434feca415f1eaae7099e9df4289286185"
-dependencies = [
- "anyhow",
- "binread",
- "byteorder",
- "candid_derive 0.4.5 (git+https://github.com/Daniel-Bloom-dfinity/candid/?branch=dbloom/func)",
+ "candid_derive",
  "codespan-reporting",
  "hex",
  "ic-types",
@@ -220,19 +193,7 @@ dependencies = [
 [[package]]
 name = "candid_derive"
 version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e02c03c4d547674a3f3f3109538fb49871fbe636216daa019f06a62faca9061"
-dependencies = [
- "lazy_static",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "candid_derive"
-version = "0.4.5"
-source = "git+https://github.com/Daniel-Bloom-dfinity/candid/?branch=dbloom/func#dc54ad434feca415f1eaae7099e9df4289286185"
+source = "git+https://github.com/Daniel-Bloom-dfinity/candid?branch=dbloom/bump#74398af80aafbebb19e69741ac31a77b21518b0e"
 dependencies = [
  "lazy_static",
  "proc-macro2",
@@ -731,7 +692,7 @@ dependencies = [
 [[package]]
 name = "ic-agent"
 version = "0.15.0"
-source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#8da624bd4d6c407d948db4623841e2b3ff3abfc4"
+source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#16af784350f0e16bfd62bb861eba5ecfbe84430b"
 dependencies = [
  "async-trait",
  "base32",
@@ -776,10 +737,10 @@ dependencies = [
 [[package]]
 name = "ic-utils"
 version = "0.15.0"
-source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#8da624bd4d6c407d948db4623841e2b3ff3abfc4"
+source = "git+https://github.com/Daniel-Bloom-dfinity/agent-rs?branch=dbloom/callback#16af784350f0e16bfd62bb861eba5ecfbe84430b"
 dependencies = [
  "async-trait",
- "candid 0.7.13",
+ "candid",
  "garcon",
  "ic-agent",
  "leb128",
@@ -798,7 +759,7 @@ version = "0.8.1"
 dependencies = [
  "anyhow",
  "base64",
- "candid 0.7.12",
+ "candid",
  "clap",
  "flate2",
  "garcon",
