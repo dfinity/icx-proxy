@@ -166,9 +166,9 @@ checksum = "c4872d67bab6358e59559027aa3b9157c53d9358c51423c17554809a8858e0f8"
 
 [[package]]
 name = "candid"
-version = "0.7.12"
+version = "0.7.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5d4dbc61f5125dab4168ce321c559aaca5511c2915ccb531e212b1c8d199d8"
+checksum = "ba9e536514a3c655568e23e36e68cbef20ee6595f641719ade03a849a13ed0ac"
 dependencies = [
  "anyhow",
  "binread",
@@ -693,9 +693,9 @@ dependencies = [
 
 [[package]]
 name = "ic-agent"
-version = "0.13.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9bf8e07a0491c6ba8d78b78c283c9146108d0fea475d3b665c337dba5fd4ce5"
+checksum = "d7b198398233a8bd3b8247bc1922899c257ba7985bea1c197b0ee31bef9d3043"
 dependencies = [
  "async-trait",
  "base32",
@@ -739,9 +739,9 @@ dependencies = [
 
 [[package]]
 name = "ic-utils"
-version = "0.13.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3362a744eb73e5a05d058069e10a0747fa25c2b008a54cfe234b8db4ea50eb3c"
+checksum = "36568bc5b48c8a1bb5506522a803cc581b3c7b7b9377eba32bf0ed6b8d5689d1"
 dependencies = [
  "async-trait",
  "candid",
