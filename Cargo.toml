@@ -26,10 +26,8 @@ garcon = { version = "0.2", features = ["async"] }
 hex = "0.4"
 hyper = { version = "0.14", features = ["full"] }
 hyper-tls = "0.5"
-ic-agent = { version = "0.15", git = "https://github.com/Daniel-Bloom-dfinity/agent-rs", branch = "dbloom/callback" }
-ic-utils = { version = "0.15", features = ["raw"], git = "https://github.com/Daniel-Bloom-dfinity/agent-rs", branch = "dbloom/callback" }
-#ic-agent = { version = "0.15" }
-#ic-utils = { version = "0.15", features = ["raw"], path = "../agent-rs/ic-utils" }
+ic-agent = { version = "0.15" }
+ic-utils = { version = "0.15", features = ["raw"] }
 lazy-regex = "2"
 tokio = { version = "1", features = ["full"] }
 serde = "1"
