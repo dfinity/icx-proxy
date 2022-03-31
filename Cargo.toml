@@ -19,8 +19,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 base64 = "0.13"
-#candid = { version = "0.7", features = ["mute_warnings"] }
-candid = { version = "0.7", features = ["mute_warnings"], git = "https://github.com/Daniel-Bloom-dfinity/candid", branch = "dbloom/bump" }
+candid = { version = "0.7", features = ["mute_warnings"] }
 clap = { version = "3", features = ["cargo", "derive"] }
 flate2 = "1.0.0"
 garcon = { version = "0.2", features = ["async"] }
