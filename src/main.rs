@@ -9,7 +9,7 @@ use hyper::{
     Body, Client, Request, Response, Server, StatusCode, Uri,
 };
 use ic_agent::{
-    agent::http_transport::ReqwestHttpReplicaV2Transport,
+    //agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
     export::Principal,
     ic_types::{hash_tree::LookupResult, HashTree},
     lookup_value, Agent, AgentError, Certificate,
@@ -28,6 +28,7 @@ use slog::Drain;
 use std::{
     convert::Infallible,
     error::Error,
+    fs::File,
     io::Read,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
@@ -40,6 +41,9 @@ use std::{
 
 mod config;
 mod logging;
+mod http_transport;
+
+use http_transport::{reqwest, ReqwestHttpReplicaV2Transport};
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
@@ -104,6 +108,12 @@ pub(crate) struct Opts {
     /// talking to the Internet Computer blockchain mainnet as it is unsecure.
     #[clap(long)]
     fetch_root_key: bool,
+
+    /// The list of custom root certificates to use. This can be used to connect to an IC
+    /// that has a self-signed certificate, for example. Do not use this when talking to
+    /// the Internet Computer blockchain mainnet as it is unsecure.
+    #[clap(long)]
+    root_certificates: Vec<PathBuf>,
 
     /// A map of domain names to canister IDs.
     /// Format: domain.name:canister-id
@@ -741,6 +751,7 @@ async fn handle_request(
     ip_addr: IpAddr,
     request: Request<Body>,
     replica_url: String,
+    client: reqwest::Client,
     proxy_url: Option<String>,
     dns_canister_config: Arc<DnsCanisterConfig>,
     logger: slog::Logger,
@@ -774,7 +785,9 @@ async fn handle_request(
     } else {
         let agent = Arc::new(
             ic_agent::Agent::builder()
-                .with_transport(ReqwestHttpReplicaV2Transport::create(replica_url).unwrap())
+                .with_transport(
+                    ReqwestHttpReplicaV2Transport::create_with_client(replica_url, client).unwrap(),
+                )
                 .build()
                 .expect("Could not create agent..."),
         );
@@ -802,10 +815,52 @@ async fn handle_request(
     }
 }
 
+fn setup_client(logger: &slog::Logger, root_certificates: &Vec<PathBuf>) -> reqwest::Client {
+    use hyper_rustls::ConfigBuilderExt;
+
+    let mut tls_config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_webpki_roots()
+        .with_no_client_auth();
+
+    // Advertise support for HTTP/2
+    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let mut builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
+
+    let mut buf = Vec::new();
+    for cert in root_certificates {
+        buf.clear();
+        if let Err(e) = File::open(cert).and_then(|mut v| v.read_to_end(&mut buf)) {
+            slog::warn!(logger, "Could not load cert `{}`: {}", cert.display(), e);
+            continue;
+        }
+        match cert.extension() {
+            Some(v) if v == "pem" => match reqwest::Certificate::from_pem(&buf) {
+                Err(e) => slog::warn!(logger, "Could not load cert `{}`: {}", cert.display(), e),
+                Ok(cert) => builder = builder.add_root_certificate(cert),
+            },
+            Some(v) if v == "der" => match reqwest::Certificate::from_der(&buf) {
+                Err(e) => slog::warn!(logger, "Could not load cert `{}`: {}", cert.display(), e),
+                Ok(cert) => builder = builder.add_root_certificate(cert),
+            },
+            _ => slog::warn!(
+                logger,
+                "Could not load cert `{}`: unknown extension",
+                cert.display()
+            ),
+        }
+    }
+
+    builder.build().expect("Could not create HTTP client.")
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let opts: Opts = Opts::parse();
 
     let logger = logging::setup_logging(&opts);
+
+    let client = setup_client(&logger, &opts.root_certificates);
 
     // Prepare a list of agents for each backend replicas.
     let replicas = Mutex::new(opts.replica.clone());
@@ -833,6 +888,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         slog::debug!(logger, "Replica URL: {}", replica_url);
 
         let proxy_url = proxy_url.clone();
+        let client = client.clone();
 
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
@@ -842,6 +898,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ip_addr,
                     req,
                     replica_url.clone(),
+                    client.clone(),
                     proxy_url.clone(),
                     dns_canister_config,
                     logger,
