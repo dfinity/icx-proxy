@@ -5,8 +5,13 @@
 
 pub use reqwest;
 
-use ic_agent::{agent::agent_error::HttpErrorPayload, ic_types::Principal, AgentError, RequestId, agent::{ReplicaV2Transport, http_transport::PasswordManager}};
 use hyper_rustls::ConfigBuilderExt;
+use ic_agent::{
+    agent::agent_error::HttpErrorPayload,
+    agent::{http_transport::PasswordManager, ReplicaV2Transport},
+    ic_types::Principal,
+    AgentError, RequestId,
+};
 use reqwest::Method;
 use std::{future::Future, pin::Pin, sync::Arc};
 

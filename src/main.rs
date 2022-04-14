@@ -12,7 +12,10 @@ use ic_agent::{
     //agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
     export::Principal,
     ic_types::{hash_tree::LookupResult, HashTree},
-    lookup_value, Agent, AgentError, Certificate,
+    lookup_value,
+    Agent,
+    AgentError,
+    Certificate,
 };
 use ic_utils::{
     call::AsyncCall,
@@ -40,8 +43,8 @@ use std::{
 };
 
 mod config;
-mod logging;
 mod http_transport;
+mod logging;
 
 use http_transport::{reqwest, ReqwestHttpReplicaV2Transport};
 
@@ -815,7 +818,7 @@ async fn handle_request(
     }
 }
 
-fn setup_client(logger: &slog::Logger, root_certificates: &Vec<PathBuf>) -> reqwest::Client {
+fn setup_client(logger: &slog::Logger, root_certificates: &[PathBuf]) -> reqwest::Client {
     use hyper_rustls::ConfigBuilderExt;
 
     let mut tls_config = rustls::ClientConfig::builder()
@@ -829,25 +832,54 @@ fn setup_client(logger: &slog::Logger, root_certificates: &Vec<PathBuf>) -> reqw
     let mut builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
 
     let mut buf = Vec::new();
-    for cert in root_certificates {
+    for cert_path in root_certificates {
         buf.clear();
-        if let Err(e) = File::open(cert).and_then(|mut v| v.read_to_end(&mut buf)) {
-            slog::warn!(logger, "Could not load cert `{}`: {}", cert.display(), e);
+        if let Err(e) = File::open(cert_path).and_then(|mut v| v.read_to_end(&mut buf)) {
+            slog::warn!(
+                logger,
+                "Could not load cert `{}`: {}",
+                cert_path.display(),
+                e
+            );
             continue;
         }
-        match cert.extension() {
+        match cert_path.extension() {
             Some(v) if v == "pem" => match reqwest::Certificate::from_pem(&buf) {
-                Err(e) => slog::warn!(logger, "Could not load cert `{}`: {}", cert.display(), e),
-                Ok(cert) => builder = builder.add_root_certificate(cert),
+                Err(e) => slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: {}",
+                    cert_path.display(),
+                    e
+                ),
+                Ok(cert) => {
+                    builder = builder.add_root_certificate(cert);
+                    slog::info!(
+                        logger,
+                        "adding pem `{}` to root certificates",
+                        cert_path.display()
+                    );
+                }
             },
             Some(v) if v == "der" => match reqwest::Certificate::from_der(&buf) {
-                Err(e) => slog::warn!(logger, "Could not load cert `{}`: {}", cert.display(), e),
-                Ok(cert) => builder = builder.add_root_certificate(cert),
+                Err(e) => slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: {}",
+                    cert_path.display(),
+                    e
+                ),
+                Ok(cert) => {
+                    slog::info!(
+                        logger,
+                        "adding der `{}` to root certificates",
+                        cert_path.display()
+                    );
+                    builder = builder.add_root_certificate(cert);
+                }
             },
             _ => slog::warn!(
                 logger,
                 "Could not load cert `{}`: unknown extension",
-                cert.display()
+                cert_path.display()
             ),
         }
     }
