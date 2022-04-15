@@ -894,7 +894,12 @@ fn setup_client(
         }
     }
 
-    let builder = builder.danger_accept_invalid_certs(danger_accept_invalid_certs);
+    let builder = if danger_accept_invalid_certs {
+        slog::warn!(logger, "Allowing invalid certs. THIS VERY IS INSECURE.");
+        builder.danger_accept_invalid_certs(danger_accept_invalid_certs)
+    } else {
+        builder
+    };
 
     builder.build().expect("Could not create HTTP client.")
 }
