@@ -112,11 +112,17 @@ pub(crate) struct Opts {
     #[clap(long)]
     fetch_root_key: bool,
 
-    /// The list of custom root certificates to use. This can be used to connect to an IC
-    /// that has a self-signed certificate, for example. Do not use this when talking to
-    /// the Internet Computer blockchain mainnet as it is unsecure.
+    /// The list of custom root HTTPS certificates to use to talk to the replica. This can be used
+    /// to connect to an IC that has a self-signed certificate, for example. Do not use this when
+    /// talking to the Internet Computer blockchain mainnet as it is unsecure.
     #[clap(long)]
-    root_certificates: Vec<PathBuf>,
+    root_certificate: Vec<PathBuf>,
+
+    /// Allows HTTPS connection to replicas with invalid HTTPS certificates. This can be used to
+    /// connect to an IC that has a self-signed certificate, for example. Do not use this when
+    /// talking to the Internet Computer blockchain mainnet as it is *VERY* unsecure.
+    #[clap(long)]
+    danger_accept_invalid_certs: bool,
 
     /// A map of domain names to canister IDs.
     /// Format: domain.name:canister-id
@@ -818,7 +824,11 @@ async fn handle_request(
     }
 }
 
-fn setup_client(logger: &slog::Logger, root_certificates: &[PathBuf]) -> reqwest::Client {
+fn setup_client(
+    logger: &slog::Logger,
+    danger_accept_invalid_certs: bool,
+    root_certificates: &[PathBuf],
+) -> reqwest::Client {
     use hyper_rustls::ConfigBuilderExt;
 
     let mut tls_config = rustls::ClientConfig::builder()
@@ -884,6 +894,8 @@ fn setup_client(logger: &slog::Logger, root_certificates: &[PathBuf]) -> reqwest
         }
     }
 
+    let builder = builder.danger_accept_invalid_certs(danger_accept_invalid_certs);
+
     builder.build().expect("Could not create HTTP client.")
 }
 
@@ -892,7 +904,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let logger = logging::setup_logging(&opts);
 
-    let client = setup_client(&logger, &opts.root_certificates);
+    let client = setup_client(
+        &logger,
+        opts.danger_accept_invalid_certs,
+        &opts.root_certificate,
+    );
 
     // Prepare a list of agents for each backend replicas.
     let replicas = Mutex::new(opts.replica.clone());
