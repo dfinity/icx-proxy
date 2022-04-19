@@ -829,11 +829,10 @@ fn setup_client(
     danger_accept_invalid_certs: bool,
     root_certificates: &[PathBuf],
 ) -> reqwest::Client {
-    let builder = rustls::ClientConfig::builder()
-        .with_safe_defaults();
-   let mut tls_config = if !danger_accept_invalid_certs {
-       use rustls::Certificate;
-       use rustls::RootCertStore;
+    let builder = rustls::ClientConfig::builder().with_safe_defaults();
+    let mut tls_config = if !danger_accept_invalid_certs {
+        use rustls::Certificate;
+        use rustls::RootCertStore;
 
         let mut root_cert_store = RootCertStore::empty();
         for cert_path in root_certificates {
@@ -865,7 +864,7 @@ fn setup_client(
                                 e
                             );
                             continue;
-                        },
+                        }
                     };
                     for c in certs {
                         if let Err(e) = root_cert_store.add(&rustls::Certificate(c)) {
@@ -877,7 +876,7 @@ fn setup_client(
                             );
                         }
                     }
-                },
+                }
                 Some(v) if v == "der" => {
                     slog::info!(
                         logger,
@@ -892,7 +891,7 @@ fn setup_client(
                             e
                         );
                     }
-                },
+                }
                 _ => slog::warn!(
                     logger,
                     "Could not load cert `{}`: unknown extension",
@@ -900,33 +899,28 @@ fn setup_client(
                 ),
             }
         }
-        
 
         use rustls::OwnedTrustAnchor;
-        let trust_anchors =
-            webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|trust_anchor| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    trust_anchor.subject,
-                    trust_anchor.spki,
-                    trust_anchor.name_constraints,
-                )
-            });
+        let trust_anchors = webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|trust_anchor| {
+            OwnedTrustAnchor::from_subject_spki_name_constraints(
+                trust_anchor.subject,
+                trust_anchor.spki,
+                trust_anchor.name_constraints,
+            )
+        });
         root_cert_store.add_server_trust_anchors(trust_anchors);
 
-
-        builder.with_root_certificates(root_cert_store)
-        .with_no_client_auth()
+        builder
+            .with_root_certificates(root_cert_store)
+            .with_no_client_auth()
     } else {
+        use rustls::client::HandshakeSignatureValid;
+        use rustls::client::ServerCertVerified;
         use rustls::client::ServerCertVerifier;
         use rustls::client::ServerName;
-        use rustls::client::ServerCertVerified;
-        use rustls::client::HandshakeSignatureValid;
         use rustls::internal::msgs::handshake::DigitallySignedStruct;
 
-        slog::warn!(
-            logger,
-            "Allowing invalid certs. THIS VERY IS INSECURE."
-        );
+        slog::warn!(logger, "Allowing invalid certs. THIS VERY IS INSECURE.");
         struct NoVerifier;
 
         impl ServerCertVerifier for NoVerifier {
@@ -960,7 +954,9 @@ fn setup_client(
                 Ok(HandshakeSignatureValid::assertion())
             }
         }
-        builder.with_custom_certificate_verifier(Arc::new(NoVerifier)).with_no_client_auth()
+        builder
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
     };
 
     // Advertise support for HTTP/2
