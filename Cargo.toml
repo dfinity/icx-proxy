@@ -30,8 +30,9 @@ hyper-rustls = { version = "0.23", features = [ "webpki-roots" ] }
 ic-agent = { version = "0.15" }
 ic-utils = { version = "0.15", features = ["raw"] }
 lazy-regex = "2"
-reqwest = "0.11"
+reqwest = { version = "0.11", features = ["rustls-tls-webpki-roots"] }
 rustls = "0.20"
+rustls-pemfile = "1"
 tokio = { version = "1", features = ["full"] }
 serde = "1"
 serde_cbor = "0.11"
@@ -41,6 +42,7 @@ slog = { version = "2", features = ["max_level_trace"] }
 slog-async = "2"
 slog-term = "2"
 url = "2"
+webpki-roots = "0.22"
 
 [features]
 skip_body_verification = []

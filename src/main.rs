@@ -32,7 +32,7 @@ use std::{
     convert::Infallible,
     error::Error,
     fs::File,
-    io::Read,
+    io::{Cursor, Read},
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
@@ -829,77 +829,144 @@ fn setup_client(
     danger_accept_invalid_certs: bool,
     root_certificates: &[PathBuf],
 ) -> reqwest::Client {
-    use hyper_rustls::ConfigBuilderExt;
+    let builder = rustls::ClientConfig::builder()
+        .with_safe_defaults();
+   let mut tls_config = if !danger_accept_invalid_certs {
+       use rustls::Certificate;
+       use rustls::RootCertStore;
 
-    let mut tls_config = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_webpki_roots()
-        .with_no_client_auth();
+        let mut root_cert_store = RootCertStore::empty();
+        for cert_path in root_certificates {
+            let mut buf = Vec::new();
+            if let Err(e) = File::open(cert_path).and_then(|mut v| v.read_to_end(&mut buf)) {
+                slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: {}",
+                    cert_path.display(),
+                    e
+                );
+                continue;
+            }
+            match cert_path.extension() {
+                Some(v) if v == "pem" => {
+                    slog::info!(
+                        logger,
+                        "adding PEM cert `{}` to root certificates",
+                        cert_path.display()
+                    );
+                    let mut pem = Cursor::new(buf);
+                    let certs = match rustls_pemfile::certs(&mut pem) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            slog::warn!(
+                                logger,
+                                "No valid certificate was found `{}`: {}",
+                                cert_path.display(),
+                                e
+                            );
+                            continue;
+                        },
+                    };
+                    for c in certs {
+                        if let Err(e) = root_cert_store.add(&rustls::Certificate(c)) {
+                            slog::warn!(
+                                logger,
+                                "Could not add part of cert `{}`: {}",
+                                cert_path.display(),
+                                e
+                            );
+                        }
+                    }
+                },
+                Some(v) if v == "der" => {
+                    slog::info!(
+                        logger,
+                        "adding DER cert `{}` to root certificates",
+                        cert_path.display()
+                    );
+                    if let Err(e) = root_cert_store.add(&Certificate(buf)) {
+                        slog::warn!(
+                            logger,
+                            "Could not add cert `{}`: {}",
+                            cert_path.display(),
+                            e
+                        );
+                    }
+                },
+                _ => slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: unknown extension",
+                    cert_path.display()
+                ),
+            }
+        }
+        
+
+        use rustls::OwnedTrustAnchor;
+        let trust_anchors =
+            webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|trust_anchor| {
+                OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    trust_anchor.subject,
+                    trust_anchor.spki,
+                    trust_anchor.name_constraints,
+                )
+            });
+        root_cert_store.add_server_trust_anchors(trust_anchors);
+
+
+        builder.with_root_certificates(root_cert_store)
+        .with_no_client_auth()
+    } else {
+        use rustls::client::ServerCertVerifier;
+        use rustls::client::ServerName;
+        use rustls::client::ServerCertVerified;
+        use rustls::client::HandshakeSignatureValid;
+        use rustls::internal::msgs::handshake::DigitallySignedStruct;
+
+        slog::warn!(
+            logger,
+            "Allowing invalid certs. THIS VERY IS INSECURE."
+        );
+        struct NoVerifier;
+
+        impl ServerCertVerifier for NoVerifier {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &rustls::Certificate,
+                _intermediates: &[rustls::Certificate],
+                _server_name: &ServerName,
+                _scts: &mut dyn Iterator<Item = &[u8]>,
+                _ocsp_response: &[u8],
+                _now: std::time::SystemTime,
+            ) -> Result<ServerCertVerified, rustls::Error> {
+                Ok(ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::Certificate,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::Certificate,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+        }
+        builder.with_custom_certificate_verifier(Arc::new(NoVerifier)).with_no_client_auth()
+    };
 
     // Advertise support for HTTP/2
     tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
-    let mut builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
-
-    let mut buf = Vec::new();
-    for cert_path in root_certificates {
-        buf.clear();
-        if let Err(e) = File::open(cert_path).and_then(|mut v| v.read_to_end(&mut buf)) {
-            slog::warn!(
-                logger,
-                "Could not load cert `{}`: {}",
-                cert_path.display(),
-                e
-            );
-            continue;
-        }
-        match cert_path.extension() {
-            Some(v) if v == "pem" => match reqwest::Certificate::from_pem(&buf) {
-                Err(e) => slog::warn!(
-                    logger,
-                    "Could not load cert `{}`: {}",
-                    cert_path.display(),
-                    e
-                ),
-                Ok(cert) => {
-                    builder = builder.add_root_certificate(cert);
-                    slog::info!(
-                        logger,
-                        "adding pem `{}` to root certificates",
-                        cert_path.display()
-                    );
-                }
-            },
-            Some(v) if v == "der" => match reqwest::Certificate::from_der(&buf) {
-                Err(e) => slog::warn!(
-                    logger,
-                    "Could not load cert `{}`: {}",
-                    cert_path.display(),
-                    e
-                ),
-                Ok(cert) => {
-                    slog::info!(
-                        logger,
-                        "adding der `{}` to root certificates",
-                        cert_path.display()
-                    );
-                    builder = builder.add_root_certificate(cert);
-                }
-            },
-            _ => slog::warn!(
-                logger,
-                "Could not load cert `{}`: unknown extension",
-                cert_path.display()
-            ),
-        }
-    }
-
-    let builder = if danger_accept_invalid_certs {
-        slog::warn!(logger, "Allowing invalid certs. THIS VERY IS INSECURE.");
-        builder.danger_accept_invalid_certs(danger_accept_invalid_certs)
-    } else {
-        builder
-    };
+    let builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
 
     builder.build().expect("Could not create HTTP client.")
 }
