@@ -38,6 +38,10 @@ slog = { version = "2", features = ["max_level_trace"] }
 slog-async = "2"
 slog-term = "2"
 url = "2"
+axum = "0.5.3"
+opentelemetry-prometheus = "0.10.0"
+opentelemetry = "0.17.0"
+prometheus = "0.13.0"
 
 [features]
 skip_body_verification = []
