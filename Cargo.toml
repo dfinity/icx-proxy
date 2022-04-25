@@ -21,7 +21,8 @@ anyhow = "1"
 base64 = "0.13"
 candid = { version = "0.7", features = ["mute_warnings"] }
 clap = { version = "3", features = ["cargo", "derive"] }
-flate2 = "1.0.0"
+flate2 = "1"
+futures = "0.3"
 garcon = { version = "0.2", features = ["async"] }
 hex = "0.4"
 hyper = { version = "0.14", features = ["full"] }

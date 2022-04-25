@@ -1,9 +1,9 @@
 use crate::config::dns_canister_config::DnsCanisterConfig;
 use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
+use futures::StreamExt;
 use hyper::{
     body,
-    body::Bytes,
     http::uri::Parts,
     service::{make_service_fn, service_fn},
     Body, Client, Request, Response, Server, StatusCode, Uri,
@@ -398,53 +398,42 @@ async fn forward_request(
     };
     let is_streaming = http_response.streaming_strategy.is_some();
     let response = if let Some(streaming_strategy) = http_response.streaming_strategy {
-        let (mut sender, body) = body::Body::channel();
-        let agent = agent.as_ref().clone();
-        sender.send_data(Bytes::from(http_response.body)).await?;
-
-        match streaming_strategy {
+        let agent = agent.clone();
+        let logger = logger.clone();
+        let body = http_response.body;
+        let body = futures::stream::once(async move { Ok(body) });
+        let body = match streaming_strategy {
             StreamingStrategy::Callback(callback) => {
-                let streaming_canister_id = callback.callback.0.principal;
-                let method_name = callback.callback.0.method;
-                let mut callback_token = callback.token;
-                let logger = logger.clone();
-                tokio::spawn(async move {
-                    let canister = HttpRequestCanister::create(&agent, streaming_canister_id);
-                    // We have not yet called http_request_stream_callback.
-                    let mut count = 0;
-                    loop {
-                        count += 1;
+                body::Body::wrap_stream(body.chain(futures::stream::try_unfold(
+                    (logger, agent, callback.callback.0, 0, Some(callback.token)),
+                    move |(logger, agent, callback, count, callback_token)| async move {
+                        let callback_token = if let Some(callback_token) = callback_token {
+                            callback_token
+                        } else {
+                            return Ok(None);
+                        };
                         if count > MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT {
-                            sender.abort();
-                            break;
+                            slog::warn!(logger, "too many callbacks");
+                            return Ok(None);
                         }
-
+                        let canister = HttpRequestCanister::create(&agent, callback.principal);
                         match canister
-                            .http_request_stream_callback(&method_name, callback_token)
+                            .http_request_stream_callback(&callback.method, callback_token)
                             .call()
                             .await
                         {
                             Ok((StreamingCallbackHttpResponse { body, token },)) => {
-                                if sender.send_data(Bytes::from(body)).await.is_err() {
-                                    sender.abort();
-                                    break;
-                                }
-                                if let Some(next_token) = token {
-                                    callback_token = next_token;
-                                } else {
-                                    break;
-                                }
+                                Ok(Some((body, (logger, agent, callback, count + 1, token))))
                             }
                             Err(e) => {
-                                slog::debug!(logger, "Error happened during streaming: {}", e);
-                                sender.abort();
-                                break;
+                                slog::warn!(logger, "Error happened during streaming: {}", e);
+                                Err(e)
                             }
                         }
-                    }
-                });
+                    },
+                )))
             }
-        }
+        };
 
         builder.body(body)?
     } else {
