@@ -2,6 +2,7 @@ use crate::config::dns_canister_config::DnsCanisterConfig;
 use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
+use futures::{future::OptionFuture, try_join, FutureExt};
 use hyper::{
     body,
     body::Bytes,
@@ -120,9 +121,9 @@ pub(crate) struct Opts {
     #[clap(long, default_value = "localhost")]
     dns_suffix: Vec<String>,
 
-    /// Port to expose Prometheus metrics on
-    #[clap(long, default_value_t = 9090)]
-    metrics_port: u16,
+    /// Address to expose Prometheus metrics on
+    #[clap(long)]
+    metrics_addr: Option<SocketAddr>,
 }
 
 fn resolve_canister_id_from_hostname(
@@ -845,9 +846,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_resource(Resource::new(vec![KeyValue::new("service", "prober")]))
         .init();
 
-    let metrics_addr = SocketAddr::from(([127, 0, 0, 1], opts.metrics_port));
-    let metrics_handler = metrics_handler.layer(Extension(MetricsHandlerArgs { exporter }));
-    let metrics_router = Router::new().route("/metrics", get(metrics_handler));
+    let metrics_addr = opts.metrics_addr;
+    let create_metrics_server = move || {
+        OptionFuture::from(metrics_addr.map(|metrics_addr| {
+            let metrics_handler = metrics_handler.layer(Extension(MetricsHandlerArgs { exporter }));
+            let metrics_router = Router::new().route("/metrics", get(metrics_handler));
+
+            axum::Server::bind(&metrics_addr).serve(metrics_router.into_make_service())
+        }))
+    };
 
     // Prepare a list of agents for each backend replicas.
     let replicas = Mutex::new(opts.replica.clone());
@@ -906,11 +913,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build()?;
 
     rt.block_on(async {
-        // Start metrics service
-        task::spawn(axum::Server::bind(&metrics_addr).serve(metrics_router.into_make_service()));
+        try_join!(
+            create_metrics_server().map(|v| v.transpose()), // metrics
+            Server::bind(&opts.address).serve(service),     // icx
+        )?;
 
-        let server = Server::bind(&opts.address).serve(service);
-        server.await?;
         Ok(())
     })
 }

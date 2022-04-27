@@ -42,6 +42,7 @@ axum = "0.5.3"
 opentelemetry-prometheus = "0.10.0"
 opentelemetry = "0.17.0"
 prometheus = "0.13.0"
+futures = "0.3.21"
 
 [features]
 skip_body_verification = []
