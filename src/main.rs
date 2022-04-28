@@ -122,6 +122,7 @@ pub(crate) struct Opts {
     dns_suffix: Vec<String>,
 
     /// Address to expose Prometheus metrics on
+    /// Examples: 127.0.0.1:9090, [::1]:9090
     #[clap(long)]
     metrics_addr: Option<SocketAddr>,
 }
@@ -825,15 +826,18 @@ async fn metrics_handler(
 
     let encoder = TextEncoder::new();
 
-    let mut result = Vec::new();
-    if encoder.encode(&metric_families, &mut result).is_err() {
+    let mut metrics_text = Vec::new();
+    if encoder.encode(&metric_families, &mut metrics_text).is_err() {
         return Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body("Internal Server Error".into())
             .unwrap();
     };
 
-    Response::builder().status(200).body(result.into()).unwrap()
+    Response::builder()
+        .status(200)
+        .body(metrics_text.into())
+        .unwrap()
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
