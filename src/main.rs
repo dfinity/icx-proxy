@@ -1,6 +1,8 @@
 use crate::config::dns_canister_config::DnsCanisterConfig;
+use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
+use futures::{future::OptionFuture, try_join, FutureExt};
 use hyper::{
     body,
     body::Bytes,
@@ -26,6 +28,9 @@ use ic_utils::{
     },
 };
 use lazy_regex::regex_captures;
+use opentelemetry::{sdk::Resource, KeyValue};
+use opentelemetry_prometheus::PrometheusExporter;
+use prometheus::{Encoder, TextEncoder};
 use sha2::{Digest, Sha256};
 use slog::Drain;
 use std::{
@@ -133,6 +138,11 @@ pub(crate) struct Opts {
     /// is used as the Principal, if it parses as a Principal.
     #[clap(long, default_value = "localhost")]
     dns_suffix: Vec<String>,
+
+    /// Address to expose Prometheus metrics on
+    /// Examples: 127.0.0.1:9090, [::1]:9090
+    #[clap(long)]
+    metrics_addr: Option<SocketAddr>,
 }
 
 fn resolve_canister_id_from_hostname(
@@ -967,6 +977,33 @@ fn setup_client(
     builder.build().expect("Could not create HTTP client.")
 }
 
+#[derive(Clone)]
+struct MetricsHandlerArgs {
+    exporter: PrometheusExporter,
+}
+
+async fn metrics_handler(
+    Extension(MetricsHandlerArgs { exporter }): Extension<MetricsHandlerArgs>,
+    _: Request<Body>,
+) -> Response<Body> {
+    let metric_families = exporter.registry().gather();
+
+    let encoder = TextEncoder::new();
+
+    let mut metrics_text = Vec::new();
+    if encoder.encode(&metric_families, &mut metrics_text).is_err() {
+        return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body("Internal Server Error".into())
+            .unwrap();
+    };
+
+    Response::builder()
+        .status(200)
+        .body(metrics_text.into())
+        .unwrap()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let opts: Opts = Opts::parse();
 
@@ -977,6 +1014,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         opts.danger_accept_invalid_certs,
         &opts.root_certificate,
     );
+    // Setup metrics
+    let exporter = opentelemetry_prometheus::exporter()
+        .with_resource(Resource::new(vec![KeyValue::new("service", "prober")]))
+        .init();
+
+    let metrics_addr = opts.metrics_addr;
+    let create_metrics_server = move || {
+        OptionFuture::from(metrics_addr.map(|metrics_addr| {
+            let metrics_handler = metrics_handler.layer(Extension(MetricsHandlerArgs { exporter }));
+            let metrics_router = Router::new().route("/metrics", get(metrics_handler));
+
+            axum::Server::bind(&metrics_addr).serve(metrics_router.into_make_service())
+        }))
+    };
 
     // Prepare a list of agents for each backend replicas.
     let replicas = Mutex::new(opts.replica.clone());
@@ -1031,13 +1082,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         opts.address
     );
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(10)
         .enable_all()
         .build()?;
-    runtime.block_on(async {
-        let server = Server::bind(&opts.address).serve(service);
-        server.await?;
+
+    rt.block_on(async {
+        try_join!(
+            create_metrics_server().map(|v| v.transpose()), // metrics
+            Server::bind(&opts.address).serve(service),     // icx
+        )?;
+
         Ok(())
     })
 }

@@ -18,22 +18,26 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+axum = "0.5.3"
 base64 = "0.13"
 candid = { version = "0.7", features = ["mute_warnings"] }
 clap = { version = "3", features = ["cargo", "derive"] }
 flate2 = "1.0.0"
+futures = "0.3.21"
 garcon = { version = "0.2", features = ["async"] }
 hex = "0.4"
 hyper = { version = "0.14", features = ["full"] }
-hyper-tls = "0.5"
 hyper-rustls = { version = "0.23", features = [ "webpki-roots" ] }
+hyper-tls = "0.5"
 ic-agent = { version = "0.15" }
 ic-utils = { version = "0.15", features = ["raw"] }
 lazy-regex = "2"
+opentelemetry = "0.17.0"
+opentelemetry-prometheus = "0.10.0"
+prometheus = "0.13.0"
 reqwest = { version = "0.11", features = ["rustls-tls-webpki-roots"] }
 rustls = "0.20"
 rustls-pemfile = "1"
-tokio = { version = "1", features = ["full"] }
 serde = "1"
 serde_cbor = "0.11"
 serde_json = "1"
@@ -41,6 +45,7 @@ sha2 = "0.10"
 slog = { version = "2", features = ["max_level_trace"] }
 slog-async = "2"
 slog-term = "2"
+tokio = { version = "1", features = ["full"] }
 url = "2"
 webpki-roots = "0.22"
 
