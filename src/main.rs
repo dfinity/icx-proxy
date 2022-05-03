@@ -121,13 +121,13 @@ pub(crate) struct Opts {
     /// to connect to an IC that has a self-signed certificate, for example. Do not use this when
     /// talking to the Internet Computer blockchain mainnet as it is unsecure.
     #[clap(long)]
-    root_certificate: Vec<PathBuf>,
+    ssl_root_certificate: Vec<PathBuf>,
 
     /// Allows HTTPS connection to replicas with invalid HTTPS certificates. This can be used to
     /// connect to an IC that has a self-signed certificate, for example. Do not use this when
     /// talking to the Internet Computer blockchain mainnet as it is *VERY* unsecure.
     #[clap(long)]
-    danger_accept_invalid_certs: bool,
+    danger_accept_invalid_ssl: bool,
 
     /// A map of domain names to canister IDs.
     /// Format: domain.name:canister-id
@@ -834,7 +834,7 @@ async fn handle_request(
     }
 }
 
-fn setup_client(
+fn setup_http_client(
     logger: &slog::Logger,
     danger_accept_invalid_certs: bool,
     root_certificates: &[PathBuf],
@@ -1009,10 +1009,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let logger = logging::setup_logging(&opts);
 
-    let client = setup_client(
+    let client = setup_http_client(
         &logger,
-        opts.danger_accept_invalid_certs,
-        &opts.root_certificate,
+        opts.danger_accept_invalid_ssl,
+        &opts.ssl_root_certificate,
     );
     // Setup metrics
     let exporter = opentelemetry_prometheus::exporter()
