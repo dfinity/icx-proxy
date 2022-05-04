@@ -11,7 +11,7 @@ use hyper::{
     Body, Client, Request, Response, Server, StatusCode, Uri,
 };
 use ic_agent::{
-    //agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
+    agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
     export::Principal,
     ic_types::{hash_tree::LookupResult, HashTree},
     lookup_value,
@@ -48,10 +48,7 @@ use std::{
 };
 
 mod config;
-mod http_transport;
 mod logging;
-
-use http_transport::{reqwest, ReqwestHttpReplicaV2Transport};
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
