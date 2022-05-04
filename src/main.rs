@@ -67,6 +67,26 @@ const MAX_LOG_CERT_B64_SIZE: usize = 2000;
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
 const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
 
+/// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
+/// `ic0.app=[::1]:9090`
+pub(crate) struct OptResolve {
+    domain: String,
+    addr: SocketAddr,
+}
+
+impl FromStr for OptResolve {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, anyhow::Error> {
+        let (domain, addr) = s
+            .split_once('=')
+            .ok_or_else(|| anyhow::Error::msg("missing '='"))?;
+        Ok(OptResolve {
+            domain: domain.into(),
+            addr: addr.parse()?,
+        })
+    }
+}
+
 #[derive(Parser)]
 #[clap(
     version = crate_version!(),
@@ -102,6 +122,11 @@ pub(crate) struct Opts {
     /// boundary node. Multiple replicas can be passed and they'll be used round-robin.
     #[clap(long, default_value = "http://localhost:8000/")]
     replica: Vec<String>,
+
+    /// Override DNS resolution for specific replica domains to particular IP addresses.
+    /// Examples: ic0.app=[::1]:9090
+    #[clap(long, value_name("DOMAIN=IP_PORT"))]
+    replica_resolve: Vec<OptResolve>,
 
     /// An address to forward any requests from /_/
     #[clap(long)]
@@ -838,6 +863,7 @@ fn setup_http_client(
     logger: &slog::Logger,
     danger_accept_invalid_certs: bool,
     root_certificates: &[PathBuf],
+    addr_mappings: Vec<OptResolve>,
 ) -> reqwest::Client {
     let builder = rustls::ClientConfig::builder().with_safe_defaults();
     let mut tls_config = if !danger_accept_invalid_certs {
@@ -974,6 +1000,13 @@ fn setup_http_client(
 
     let builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
 
+    // Setup DNS
+    let builder = addr_mappings
+        .into_iter()
+        .fold(builder, |builder, OptResolve { domain, addr }| {
+            builder.resolve(&domain, addr)
+        });
+
     builder.build().expect("Could not create HTTP client.")
 }
 
@@ -1013,6 +1046,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &logger,
         opts.danger_accept_invalid_ssl,
         &opts.ssl_root_certificate,
+        opts.replica_resolve,
     );
     // Setup metrics
     let exporter = opentelemetry_prometheus::exporter()
@@ -1076,11 +1110,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    slog::info!(
-        logger,
-        "Starting server. Listening on http://{}/",
-        opts.address
-    );
+    let address = opts.address;
+    slog::info!(logger, "Starting server. Listening on http://{}/", address);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(10)
@@ -1090,7 +1121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     rt.block_on(async {
         try_join!(
             create_metrics_server().map(|v| v.transpose()), // metrics
-            Server::bind(&opts.address).serve(service),     // icx
+            Server::bind(&address).serve(service),          // icx
         )?;
 
         Ok(())
