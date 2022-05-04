@@ -14,10 +14,7 @@ use ic_agent::{
     agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
     export::Principal,
     ic_types::{hash_tree::LookupResult, HashTree},
-    lookup_value,
-    Agent,
-    AgentError,
-    Certificate,
+    lookup_value, Agent, AgentError, Certificate,
 };
 use ic_utils::{
     call::AsyncCall,
