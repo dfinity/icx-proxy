@@ -11,7 +11,7 @@ use hyper::{
     Body, Client, Request, Response, Server, StatusCode, Uri,
 };
 use ic_agent::{
-    agent::http_transport::ReqwestHttpReplicaV2Transport,
+    agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
     export::Principal,
     ic_types::{hash_tree::LookupResult, HashTree},
     lookup_value, Agent, AgentError, Certificate,
@@ -33,7 +33,8 @@ use slog::Drain;
 use std::{
     convert::Infallible,
     error::Error,
-    io::Read,
+    fs::File,
+    io::{Cursor, Read},
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
@@ -42,7 +43,6 @@ use std::{
         Arc, Mutex,
     },
 };
-use tokio::task;
 
 mod config;
 mod logging;
@@ -60,6 +60,26 @@ const MAX_LOG_CERT_B64_SIZE: usize = 2000;
 // The limit of a buffer we should decompress ~10mb.
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
 const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
+
+/// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
+/// `ic0.app=[::1]:9090`
+pub(crate) struct OptResolve {
+    domain: String,
+    addr: SocketAddr,
+}
+
+impl FromStr for OptResolve {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, anyhow::Error> {
+        let (domain, addr) = s
+            .split_once('=')
+            .ok_or_else(|| anyhow::Error::msg("missing '='"))?;
+        Ok(OptResolve {
+            domain: domain.into(),
+            addr: addr.parse()?,
+        })
+    }
+}
 
 #[derive(Parser)]
 #[clap(
@@ -97,6 +117,11 @@ pub(crate) struct Opts {
     #[clap(long, default_value = "http://localhost:8000/")]
     replica: Vec<String>,
 
+    /// Override DNS resolution for specific replica domains to particular IP addresses.
+    /// Examples: ic0.app=[::1]:9090
+    #[clap(long, value_name("DOMAIN=IP_PORT"))]
+    replica_resolve: Vec<OptResolve>,
+
     /// An address to forward any requests from /_/
     #[clap(long)]
     proxy: Option<String>,
@@ -110,6 +135,18 @@ pub(crate) struct Opts {
     /// talking to the Internet Computer blockchain mainnet as it is unsecure.
     #[clap(long)]
     fetch_root_key: bool,
+
+    /// The list of custom root HTTPS certificates to use to talk to the replica. This can be used
+    /// to connect to an IC that has a self-signed certificate, for example. Do not use this when
+    /// talking to the Internet Computer blockchain mainnet as it is unsecure.
+    #[clap(long)]
+    ssl_root_certificate: Vec<PathBuf>,
+
+    /// Allows HTTPS connection to replicas with invalid HTTPS certificates. This can be used to
+    /// connect to an IC that has a self-signed certificate, for example. Do not use this when
+    /// talking to the Internet Computer blockchain mainnet as it is *VERY* unsecure.
+    #[clap(long)]
+    danger_accept_invalid_ssl: bool,
 
     /// A map of domain names to canister IDs.
     /// Format: domain.name:canister-id
@@ -752,6 +789,7 @@ async fn handle_request(
     ip_addr: IpAddr,
     request: Request<Body>,
     replica_url: String,
+    client: reqwest::Client,
     proxy_url: Option<String>,
     dns_canister_config: Arc<DnsCanisterConfig>,
     logger: slog::Logger,
@@ -785,7 +823,9 @@ async fn handle_request(
     } else {
         let agent = Arc::new(
             ic_agent::Agent::builder()
-                .with_transport(ReqwestHttpReplicaV2Transport::create(replica_url).unwrap())
+                .with_transport(
+                    ReqwestHttpReplicaV2Transport::create_with_client(replica_url, client).unwrap(),
+                )
                 .build()
                 .expect("Could not create agent..."),
         );
@@ -811,6 +851,157 @@ async fn handle_request(
         }
         Ok(x) => Ok::<_, Infallible>(x),
     }
+}
+
+fn setup_http_client(
+    logger: &slog::Logger,
+    danger_accept_invalid_certs: bool,
+    root_certificates: &[PathBuf],
+    addr_mappings: Vec<OptResolve>,
+) -> reqwest::Client {
+    let builder = rustls::ClientConfig::builder().with_safe_defaults();
+    let mut tls_config = if !danger_accept_invalid_certs {
+        use rustls::Certificate;
+        use rustls::RootCertStore;
+
+        let mut root_cert_store = RootCertStore::empty();
+        for cert_path in root_certificates {
+            let mut buf = Vec::new();
+            if let Err(e) = File::open(cert_path).and_then(|mut v| v.read_to_end(&mut buf)) {
+                slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: {}",
+                    cert_path.display(),
+                    e
+                );
+                continue;
+            }
+            match cert_path.extension() {
+                Some(v) if v == "pem" => {
+                    slog::info!(
+                        logger,
+                        "adding PEM cert `{}` to root certificates",
+                        cert_path.display()
+                    );
+                    let mut pem = Cursor::new(buf);
+                    let certs = match rustls_pemfile::certs(&mut pem) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            slog::warn!(
+                                logger,
+                                "No valid certificate was found `{}`: {}",
+                                cert_path.display(),
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    for c in certs {
+                        if let Err(e) = root_cert_store.add(&rustls::Certificate(c)) {
+                            slog::warn!(
+                                logger,
+                                "Could not add part of cert `{}`: {}",
+                                cert_path.display(),
+                                e
+                            );
+                        }
+                    }
+                }
+                Some(v) if v == "der" => {
+                    slog::info!(
+                        logger,
+                        "adding DER cert `{}` to root certificates",
+                        cert_path.display()
+                    );
+                    if let Err(e) = root_cert_store.add(&Certificate(buf)) {
+                        slog::warn!(
+                            logger,
+                            "Could not add cert `{}`: {}",
+                            cert_path.display(),
+                            e
+                        );
+                    }
+                }
+                _ => slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: unknown extension",
+                    cert_path.display()
+                ),
+            }
+        }
+
+        use rustls::OwnedTrustAnchor;
+        let trust_anchors = webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|trust_anchor| {
+            OwnedTrustAnchor::from_subject_spki_name_constraints(
+                trust_anchor.subject,
+                trust_anchor.spki,
+                trust_anchor.name_constraints,
+            )
+        });
+        root_cert_store.add_server_trust_anchors(trust_anchors);
+
+        builder
+            .with_root_certificates(root_cert_store)
+            .with_no_client_auth()
+    } else {
+        use rustls::client::HandshakeSignatureValid;
+        use rustls::client::ServerCertVerified;
+        use rustls::client::ServerCertVerifier;
+        use rustls::client::ServerName;
+        use rustls::internal::msgs::handshake::DigitallySignedStruct;
+
+        slog::warn!(logger, "Allowing invalid certs. THIS VERY IS INSECURE.");
+        struct NoVerifier;
+
+        impl ServerCertVerifier for NoVerifier {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &rustls::Certificate,
+                _intermediates: &[rustls::Certificate],
+                _server_name: &ServerName,
+                _scts: &mut dyn Iterator<Item = &[u8]>,
+                _ocsp_response: &[u8],
+                _now: std::time::SystemTime,
+            ) -> Result<ServerCertVerified, rustls::Error> {
+                Ok(ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::Certificate,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::Certificate,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+        }
+        builder
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
+    };
+
+    // Advertise support for HTTP/2
+    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
+
+    // Setup DNS
+    let builder = addr_mappings
+        .into_iter()
+        .fold(builder, |builder, OptResolve { domain, addr }| {
+            builder.resolve(&domain, addr)
+        });
+
+    builder.build().expect("Could not create HTTP client.")
 }
 
 #[derive(Clone)]
@@ -845,6 +1036,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let logger = logging::setup_logging(&opts);
 
+    let client = setup_http_client(
+        &logger,
+        opts.danger_accept_invalid_ssl,
+        &opts.ssl_root_certificate,
+        opts.replica_resolve,
+    );
     // Setup metrics
     let exporter = opentelemetry_prometheus::exporter()
         .with_resource(Resource::new(vec![KeyValue::new("service", "prober")]))
@@ -886,6 +1083,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         slog::debug!(logger, "Replica URL: {}", replica_url);
 
         let proxy_url = proxy_url.clone();
+        let client = client.clone();
 
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
@@ -895,6 +1093,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ip_addr,
                     req,
                     replica_url.clone(),
+                    client.clone(),
                     proxy_url.clone(),
                     dns_canister_config,
                     logger,
@@ -905,11 +1104,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    slog::info!(
-        logger,
-        "Starting server. Listening on http://{}/",
-        opts.address
-    );
+    let address = opts.address;
+    slog::info!(logger, "Starting server. Listening on http://{}/", address);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(10)
@@ -919,7 +1115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     rt.block_on(async {
         try_join!(
             create_metrics_server().map(|v| v.transpose()), // metrics
-            Server::bind(&opts.address).serve(service),     // icx
+            Server::bind(&address).serve(service),          // icx
         )?;
 
         Ok(())
