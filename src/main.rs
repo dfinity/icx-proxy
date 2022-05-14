@@ -44,7 +44,10 @@ mod logging;
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
 // Limit the total number of calls to an HTTP Request loop to 1000 for now.
-const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
+const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: usize = 1000;
+
+// Limit the number of Stream Callbacks buffered
+const STREAM_CALLBACK_BUFFFER: usize = 3;
 
 // The maximum length of a body we should log as tracing.
 const MAX_LOG_BODY_SIZE: usize = 100;
@@ -403,19 +406,15 @@ async fn forward_request(
         let body = http_response.body;
         let body = futures::stream::once(async move { Ok(body) });
         let body = match streaming_strategy {
-            StreamingStrategy::Callback(callback) => {
-                body::Body::wrap_stream(body.chain(futures::stream::try_unfold(
-                    (logger, agent, callback.callback.0, 0, Some(callback.token)),
-                    move |(logger, agent, callback, count, callback_token)| async move {
+            StreamingStrategy::Callback(callback) => body::Body::wrap_stream(
+                body.chain(futures::stream::try_unfold(
+                    (logger, agent, callback.callback.0, Some(callback.token)),
+                    move |(logger, agent, callback, callback_token)| async move {
                         let callback_token = if let Some(callback_token) = callback_token {
                             callback_token
                         } else {
                             return Ok(None);
                         };
-                        if count > MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT {
-                            slog::warn!(logger, "too many callbacks");
-                            return Ok(None);
-                        }
                         let canister = HttpRequestCanister::create(&agent, callback.principal);
                         match canister
                             .http_request_stream_callback(&callback.method, callback_token)
@@ -423,7 +422,7 @@ async fn forward_request(
                             .await
                         {
                             Ok((StreamingCallbackHttpResponse { body, token },)) => {
-                                Ok(Some((body, (logger, agent, callback, count + 1, token))))
+                                Ok(Some((body, (logger, agent, callback, token))))
                             }
                             Err(e) => {
                                 slog::warn!(logger, "Error happened during streaming: {}", e);
@@ -431,8 +430,11 @@ async fn forward_request(
                             }
                         }
                     },
-                )))
-            }
+                ))
+                .take(MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT)
+                .map(|x| async move { x })
+                .buffered(STREAM_CALLBACK_BUFFFER),
+            ),
         };
 
         builder.body(body)?
