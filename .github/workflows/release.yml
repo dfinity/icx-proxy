@@ -149,13 +149,12 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: binaries.tar.gz
           asset_name: binaries-${{ matrix.name }}.tar.gz
-          tag: ${{ env.SHA_SHORT }}
+          tag: rev-${{ env.SHA_SHORT }}
 
       - name: Upload deb
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: icx-proxy.deb
-          tag: ${{ env.SHA_SHORT }}
+          tag: rev-${{ env.SHA_SHORT }}
         if: contains(matrix.target, 'linux-musl')
-
