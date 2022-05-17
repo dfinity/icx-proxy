@@ -12,7 +12,7 @@ cargo install icx-proxy
 ```
 
 ## Usage
-Once installed, using `icx-proxy --help` will show the usage message and all the flags.
+Once installed, using `icx-proxy --help` will show the usage message and all the flags. 
 
 ## Ecosystem
 This is similar in principle to `dfx bootstrap`, but is simpler and more configurable. This also can replace a Replica when using the `--network` flag in `dfx`.
