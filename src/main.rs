@@ -6,12 +6,13 @@ use futures::{future::OptionFuture, try_join, FutureExt};
 use hyper::{
     body,
     body::Bytes,
-    http::uri::Parts,
+    http::{header::CONTENT_TYPE, uri::Parts},
     service::{make_service_fn, service_fn},
     Body, Client, Request, Response, Server, StatusCode, Uri,
 };
 use ic_agent::{
     agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
+    agent_error::HttpErrorPayload,
     export::Principal,
     ic_types::{hash_tree::LookupResult, HashTree},
     lookup_value, Agent, AgentError, Certificate,
@@ -400,6 +401,16 @@ async fn forward_request(
             }) => Err(Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(format!(r#"Replica Error ({}): "{}""#, reject_code, reject_message).into())
+                .unwrap())),
+            Err(AgentError::HttpError(HttpErrorPayload {
+                status: 451,
+                content_type,
+                content,
+            })) => Err(Ok(content_type
+                .into_iter()
+                .fold(Response::builder(), |r, c| r.header(CONTENT_TYPE, c))
+                .status(451)
+                .body(content.into())
                 .unwrap())),
             Err(e) => Err(Err(e.into())),
         }
