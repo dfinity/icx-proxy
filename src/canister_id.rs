@@ -4,11 +4,11 @@ use ic_agent::export::Principal;
 use crate::config::dns_canister_config::DnsCanisterConfig;
 
 /// A resolver for `Principal`s from a `Uri`.
-trait UriCanisterIdResolver: Sync + Send {
+trait UriResolver: Sync + Send {
     fn resolve(&self, uri: &Uri) -> Option<Principal>;
 }
 
-impl<T: UriCanisterIdResolver> UriCanisterIdResolver for &T {
+impl<T: UriResolver> UriResolver for &T {
     fn resolve(&self, uri: &Uri) -> Option<Principal> {
         T::resolve(self, uri)
     }
@@ -16,7 +16,7 @@ impl<T: UriCanisterIdResolver> UriCanisterIdResolver for &T {
 
 struct UriParameterResolver;
 
-impl UriCanisterIdResolver for UriParameterResolver {
+impl UriResolver for UriParameterResolver {
     fn resolve(&self, uri: &Uri) -> Option<Principal> {
         url::form_urlencoded::parse(uri.query()?.as_bytes())
             .find(|(name, _)| name == "canisterId")
@@ -24,18 +24,18 @@ impl UriCanisterIdResolver for UriParameterResolver {
     }
 }
 
-impl UriCanisterIdResolver for DnsCanisterConfig {
+impl UriResolver for DnsCanisterConfig {
     fn resolve(&self, uri: &Uri) -> Option<Principal> {
         self.resolve_canister_id(uri.host()?)
     }
 }
 
 /// A resolver for `Principal`s from a `Request`.
-pub trait CanisterIdResolver<B>: Sync + Send {
+pub trait Resolver<B>: Sync + Send {
     fn resolve(&self, request: &Request<B>) -> Option<Principal>;
 }
 
-impl<B, T: CanisterIdResolver<B>> CanisterIdResolver<B> for &T {
+impl<B, T: Resolver<B>> Resolver<B> for &T {
     fn resolve(&self, request: &Request<B>) -> Option<Principal> {
         T::resolve(self, request)
     }
@@ -43,7 +43,7 @@ impl<B, T: CanisterIdResolver<B>> CanisterIdResolver<B> for &T {
 
 struct RequestUriResolver<T>(pub T);
 
-impl<B, T: UriCanisterIdResolver> CanisterIdResolver<B> for RequestUriResolver<T> {
+impl<B, T: UriResolver> Resolver<B> for RequestUriResolver<T> {
     fn resolve(&self, request: &Request<B>) -> Option<Principal> {
         self.0.resolve(request.uri())
     }
@@ -51,7 +51,7 @@ impl<B, T: UriCanisterIdResolver> CanisterIdResolver<B> for RequestUriResolver<T
 
 struct RequestHostResolver<T>(pub T);
 
-impl<B, T: UriCanisterIdResolver> CanisterIdResolver<B> for RequestHostResolver<T> {
+impl<B, T: UriResolver> Resolver<B> for RequestHostResolver<T> {
     fn resolve(&self, request: &Request<B>) -> Option<Principal> {
         self.0.resolve(
             &Uri::builder()
@@ -63,12 +63,12 @@ impl<B, T: UriCanisterIdResolver> CanisterIdResolver<B> for RequestHostResolver<
 }
 
 /// The default canister id resolver
-pub struct DefaultCanisterIdResolver {
+pub struct DefaultResolver {
     pub dns: DnsCanisterConfig,
     pub check_params: bool,
 }
 
-impl<B> CanisterIdResolver<B> for DefaultCanisterIdResolver {
+impl<B> Resolver<B> for DefaultResolver {
     fn resolve(&self, request: &Request<B>) -> Option<Principal> {
         if let Some(v) = RequestHostResolver(&self.dns).resolve(request) {
             return Some(v);
@@ -90,7 +90,7 @@ mod tests {
     use hyper::{header::HOST, Request};
     use ic_agent::export::Principal;
 
-    use super::{CanisterIdResolver, DefaultCanisterIdResolver};
+    use super::{Resolver, DefaultResolver};
     use crate::config::dns_canister_config::DnsCanisterConfig;
 
     #[test]
@@ -100,7 +100,7 @@ mod tests {
             vec!["little.domain.name"],
         );
 
-        let resolver = DefaultCanisterIdResolver {
+        let resolver = DefaultResolver {
             dns,
             check_params: false,
         };
@@ -142,7 +142,7 @@ mod tests {
             vec!["raw.ic0.app", "ic0.app"],
         );
 
-        let resolver = DefaultCanisterIdResolver {
+        let resolver = DefaultResolver {
             dns,
             check_params: false,
         };
@@ -203,7 +203,7 @@ mod tests {
     fn dfx() {
         let dns = parse_config(vec![], vec!["localhost"]);
 
-        let resolver = DefaultCanisterIdResolver {
+        let resolver = DefaultResolver {
             dns,
             check_params: true,
         };

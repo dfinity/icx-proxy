@@ -49,7 +49,6 @@ mod config;
 mod logging;
 
 use crate::{
-    canister_id::{CanisterIdResolver, DefaultCanisterIdResolver},
     config::dns_canister_config::DnsCanisterConfig,
 };
 
@@ -266,7 +265,7 @@ fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> Heade
 async fn forward_request(
     request: Request<Body>,
     agent: Arc<Agent>,
-    resolver: &dyn CanisterIdResolver<Body>,
+    resolver: &dyn canister_id::Resolver<Body>,
     logger: slog::Logger,
 ) -> Result<Response<Body>, Box<dyn Error>> {
     let canister_id = match resolver.resolve(&request) {
@@ -747,7 +746,7 @@ struct HandleRequest {
     replica_url: String,
     client: reqwest::Client,
     proxy_url: Option<String>,
-    resolver: Arc<dyn CanisterIdResolver<Body>>,
+    resolver: Arc<dyn canister_id::Resolver<Body>>,
     logger: slog::Logger,
     fetch_root_key: bool,
     debug: bool,
@@ -1031,7 +1030,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let replicas = Mutex::new(opts.replica.clone());
 
     let dns = DnsCanisterConfig::new(&opts.dns_alias, &opts.dns_suffix)?;
-    let resolver = Arc::new(DefaultCanisterIdResolver {
+    let resolver = Arc::new(canister_id::DefaultResolver {
         dns,
         check_params: !opts.ignore_url_canister_param,
     });
