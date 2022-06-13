@@ -90,7 +90,7 @@ mod tests {
     use hyper::{header::HOST, Request};
     use ic_agent::export::Principal;
 
-    use super::{Resolver, DefaultResolver};
+    use super::{DefaultResolver, Resolver};
     use crate::config::dns_canister_config::DnsCanisterConfig;
 
     #[test]

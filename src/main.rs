@@ -48,9 +48,7 @@ mod canister_id;
 mod config;
 mod logging;
 
-use crate::{
-    config::dns_canister_config::DnsCanisterConfig,
-};
+use crate::config::dns_canister_config::DnsCanisterConfig;
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
