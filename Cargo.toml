@@ -26,6 +26,7 @@ flate2 = "1.0.0"
 futures = "0.3.21"
 garcon = { version = "0.2", features = ["async"] }
 hex = "0.4"
+http-body = "0.4.5"
 hyper = { version = "0.14", features = ["full"] }
 hyper-rustls = { version = "0.23", features = [ "webpki-roots" ] }
 hyper-tls = "0.5"

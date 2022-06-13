@@ -2,6 +2,7 @@ use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
 use futures::{future::OptionFuture, try_join, FutureExt};
+use http_body::{LengthLimitError, Limited};
 use hyper::{
     body,
     body::Bytes,
@@ -63,6 +64,11 @@ const MAX_LOG_CERT_B64_SIZE: usize = 2000;
 // The limit of a buffer we should decompress ~10mb.
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
 const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
+
+const KB: usize = 1024;
+const MB: usize = 1024 * KB;
+
+const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
 
 /// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
 /// `ic0.app=[::1]:9090`
@@ -301,7 +307,20 @@ async fn forward_request(
         })
         .collect::<Vec<_>>();
 
-    let entire_body = body::to_bytes(body).await?.to_vec();
+    // Limit request body size
+    let body = Limited::new(body, REQUEST_BODY_SIZE_LIMIT);
+    let entire_body = match hyper::body::to_bytes(body).await {
+        Ok(data) => data,
+        Err(err) => {
+            if err.downcast_ref::<LengthLimitError>().is_some() {
+                return Ok(Response::builder()
+                    .status(StatusCode::PAYLOAD_TOO_LARGE)
+                    .body(Body::from("Request size exceeds limit"))?);
+            }
+            return Err(err);
+        }
+    }
+    .to_vec();
 
     slog::trace!(logger, "<<");
     if logger.is_trace_enabled() {
