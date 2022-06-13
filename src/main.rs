@@ -1,4 +1,3 @@
-use crate::config::dns_canister_config::DnsCanisterConfig;
 use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
@@ -45,8 +44,11 @@ use std::{
     },
 };
 
+mod canister_id;
 mod config;
 mod logging;
+
+use crate::config::dns_canister_config::DnsCanisterConfig;
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
@@ -159,73 +161,14 @@ pub(crate) struct Opts {
     #[clap(long, default_value = "localhost")]
     dns_suffix: Vec<String>,
 
+    /// Whether or not to ignore `canisterId=` when locating the canister.
+    #[clap(long)]
+    ignore_url_canister_param: bool,
+
     /// Address to expose Prometheus metrics on
     /// Examples: 127.0.0.1:9090, [::1]:9090
     #[clap(long)]
     metrics_addr: Option<SocketAddr>,
-}
-
-fn resolve_canister_id_from_hostname(
-    hostname: &str,
-    dns_canister_config: &DnsCanisterConfig,
-) -> Option<Principal> {
-    let url = Uri::from_str(hostname).ok()?;
-
-    let split_hostname = url.host()?.split('.').collect::<Vec<&str>>();
-    let split_hostname = split_hostname.as_slice();
-
-    if let Some(principal) =
-        dns_canister_config.resolve_canister_id_from_split_hostname(split_hostname)
-    {
-        return Some(principal);
-    }
-    // Check if it's localhost or ic0.
-    match split_hostname {
-        [.., maybe_canister_id, "localhost"] => Principal::from_text(maybe_canister_id).ok(),
-        [maybe_canister_id, ..] => Principal::from_text(maybe_canister_id).ok(),
-        _ => None,
-    }
-}
-
-fn resolve_canister_id_from_uri(url: &hyper::Uri) -> Option<Principal> {
-    let (_, canister_id) = url::form_urlencoded::parse(url.query()?.as_bytes())
-        .find(|(name, _)| name == "canisterId")?;
-    Principal::from_text(canister_id.as_ref()).ok()
-}
-
-/// Try to resolve a canister ID from an HTTP Request. If it cannot be resolved,
-/// [None] will be returned.
-fn resolve_canister_id(
-    request: &Request<Body>,
-    dns_canister_config: &DnsCanisterConfig,
-) -> Option<Principal> {
-    // Look for subdomains if there's a host header.
-    if let Some(host_header) = request.headers().get("Host") {
-        if let Ok(host) = host_header.to_str() {
-            if let Some(canister_id) = resolve_canister_id_from_hostname(host, dns_canister_config)
-            {
-                return Some(canister_id);
-            }
-        }
-    }
-
-    // Look into the URI.
-    if let Some(canister_id) = resolve_canister_id_from_uri(request.uri()) {
-        return Some(canister_id);
-    }
-
-    // Look into the request by header.
-    if let Some(referer_header) = request.headers().get("referer") {
-        if let Ok(referer) = referer_header.to_str() {
-            if let Ok(referer_uri) = hyper::Uri::from_str(referer) {
-                if let Some(canister_id) = resolve_canister_id_from_uri(&referer_uri) {
-                    return Some(canister_id);
-                }
-            }
-        }
-    }
-
-    None
 }
 
 fn decode_hash_tree(
@@ -320,10 +263,10 @@ fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> Heade
 async fn forward_request(
     request: Request<Body>,
     agent: Arc<Agent>,
-    dns_canister_config: &DnsCanisterConfig,
+    resolver: &dyn canister_id::Resolver<Body>,
     logger: slog::Logger,
 ) -> Result<Response<Body>, Box<dyn Error>> {
-    let canister_id = match resolve_canister_id(&request, dns_canister_config) {
+    let canister_id = match resolver.resolve(&request) {
         None => {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
@@ -795,17 +738,30 @@ fn unable_to_fetch_root_key() -> Result<Response<Body>, Box<dyn Error>> {
         .body("Unable to fetch root key".into())?)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_request(
+struct HandleRequest {
     ip_addr: IpAddr,
     request: Request<Body>,
     replica_url: String,
     client: reqwest::Client,
     proxy_url: Option<String>,
-    dns_canister_config: Arc<DnsCanisterConfig>,
+    resolver: Arc<dyn canister_id::Resolver<Body>>,
     logger: slog::Logger,
     fetch_root_key: bool,
     debug: bool,
+}
+
+async fn handle_request(
+    HandleRequest {
+        ip_addr,
+        request,
+        replica_url,
+        client,
+        proxy_url,
+        resolver,
+        logger,
+        fetch_root_key,
+        debug,
+    }: HandleRequest,
 ) -> Result<Response<Body>, Infallible> {
     let request_uri_path = request.uri().path();
     let result = if request_uri_path.starts_with("/api/") {
@@ -843,7 +799,7 @@ async fn handle_request(
         if fetch_root_key && agent.fetch_root_key().await.is_err() {
             unable_to_fetch_root_key()
         } else {
-            forward_request(request, agent, dns_canister_config.as_ref(), logger.clone()).await
+            forward_request(request, agent, resolver.as_ref(), logger.clone()).await
         }
     };
 
@@ -1071,7 +1027,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Prepare a list of agents for each backend replicas.
     let replicas = Mutex::new(opts.replica.clone());
 
-    let dns_canister_config = Arc::new(DnsCanisterConfig::new(&opts.dns_alias, &opts.dns_suffix)?);
+    let dns = DnsCanisterConfig::new(&opts.dns_alias, &opts.dns_suffix)?;
+    let resolver = Arc::new(canister_id::DefaultResolver {
+        dns,
+        check_params: !opts.ignore_url_canister_param,
+    });
 
     let counter = AtomicUsize::new(0);
     let debug = opts.debug;
@@ -1081,7 +1041,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let service = make_service_fn(|socket: &hyper::server::conn::AddrStream| {
         let ip_addr = socket.remote_addr();
         let ip_addr = ip_addr.ip();
-        let dns_canister_config = dns_canister_config.clone();
+        let resolver = resolver.clone();
         let logger = logger.clone();
 
         // Select an agent.
@@ -1097,20 +1057,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let client = client.clone();
 
         async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
+            Ok::<_, Infallible>(service_fn(move |request| {
                 let logger = logger.clone();
-                let dns_canister_config = dns_canister_config.clone();
-                handle_request(
+                let resolver = resolver.clone();
+                handle_request(HandleRequest {
                     ip_addr,
-                    req,
-                    replica_url.clone(),
-                    client.clone(),
-                    proxy_url.clone(),
-                    dns_canister_config,
+                    request,
+                    replica_url: replica_url.clone(),
+                    client: client.clone(),
+                    proxy_url: proxy_url.clone(),
+                    resolver,
                     logger,
                     fetch_root_key,
                     debug,
-                )
+                })
             }))
         }
     });
