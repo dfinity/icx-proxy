@@ -1,15 +1,17 @@
-use crate::config::dns_canister_config::DnsCanisterConfig;
+use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
-use futures::StreamExt;
+use futures::{future::OptionFuture, try_join, FutureExt, StreamExt};
+use http_body::{LengthLimitError, Limited};
 use hyper::{
     body,
-    http::uri::Parts,
+    http::{header::CONTENT_TYPE, uri::Parts},
     service::{make_service_fn, service_fn},
     Body, Client, Request, Response, Server, StatusCode, Uri,
 };
 use ic_agent::{
-    agent::http_transport::ReqwestHttpReplicaV2Transport,
+    agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
+    agent_error::HttpErrorPayload,
     export::Principal,
     ic_types::{hash_tree::LookupResult, HashTree},
     lookup_value, Agent, AgentError, Certificate,
@@ -23,12 +25,16 @@ use ic_utils::{
     },
 };
 use lazy_regex::regex_captures;
+use opentelemetry::{sdk::Resource, KeyValue};
+use opentelemetry_prometheus::PrometheusExporter;
+use prometheus::{Encoder, TextEncoder};
 use sha2::{Digest, Sha256};
 use slog::Drain;
 use std::{
     convert::Infallible,
     error::Error,
-    io::Read,
+    fs::File,
+    io::{Cursor, Read},
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
@@ -38,8 +44,11 @@ use std::{
     },
 };
 
+mod canister_id;
 mod config;
 mod logging;
+
+use crate::config::dns_canister_config::DnsCanisterConfig;
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
@@ -57,6 +66,31 @@ const MAX_LOG_CERT_B64_SIZE: usize = 2000;
 // The limit of a buffer we should decompress ~10mb.
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
 const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
+
+const KB: usize = 1024;
+const MB: usize = 1024 * KB;
+
+const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
+
+/// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
+/// `ic0.app=[::1]:9090`
+pub(crate) struct OptResolve {
+    domain: String,
+    addr: SocketAddr,
+}
+
+impl FromStr for OptResolve {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, anyhow::Error> {
+        let (domain, addr) = s
+            .split_once('=')
+            .ok_or_else(|| anyhow::Error::msg("missing '='"))?;
+        Ok(OptResolve {
+            domain: domain.into(),
+            addr: addr.parse()?,
+        })
+    }
+}
 
 #[derive(Parser)]
 #[clap(
@@ -94,6 +128,11 @@ pub(crate) struct Opts {
     #[clap(long, default_value = "http://localhost:8000/")]
     replica: Vec<String>,
 
+    /// Override DNS resolution for specific replica domains to particular IP addresses.
+    /// Examples: ic0.app=[::1]:9090
+    #[clap(long, value_name("DOMAIN=IP_PORT"))]
+    replica_resolve: Vec<OptResolve>,
+
     /// An address to forward any requests from /_/
     #[clap(long)]
     proxy: Option<String>,
@@ -108,6 +147,18 @@ pub(crate) struct Opts {
     #[clap(long)]
     fetch_root_key: bool,
 
+    /// The list of custom root HTTPS certificates to use to talk to the replica. This can be used
+    /// to connect to an IC that has a self-signed certificate, for example. Do not use this when
+    /// talking to the Internet Computer blockchain mainnet as it is unsecure.
+    #[clap(long)]
+    ssl_root_certificate: Vec<PathBuf>,
+
+    /// Allows HTTPS connection to replicas with invalid HTTPS certificates. This can be used to
+    /// connect to an IC that has a self-signed certificate, for example. Do not use this when
+    /// talking to the Internet Computer blockchain mainnet as it is *VERY* unsecure.
+    #[clap(long)]
+    danger_accept_invalid_ssl: bool,
+
     /// A map of domain names to canister IDs.
     /// Format: domain.name:canister-id
     #[clap(long)]
@@ -117,69 +168,15 @@ pub(crate) struct Opts {
     /// is used as the Principal, if it parses as a Principal.
     #[clap(long, default_value = "localhost")]
     dns_suffix: Vec<String>,
-}
 
-fn resolve_canister_id_from_hostname(
-    hostname: &str,
-    dns_canister_config: &DnsCanisterConfig,
-) -> Option<Principal> {
-    let url = Uri::from_str(hostname).ok()?;
+    /// Whether or not to ignore `canisterId=` when locating the canister.
+    #[clap(long)]
+    ignore_url_canister_param: bool,
 
-    let split_hostname = url.host()?.split('.').collect::<Vec<&str>>();
-    let split_hostname = split_hostname.as_slice();
-
-    if let Some(principal) =
-        dns_canister_config.resolve_canister_id_from_split_hostname(split_hostname)
-    {
-        return Some(principal);
-    }
-    // Check if it's localhost or ic0.
-    match split_hostname {
-        [.., maybe_canister_id, "localhost"] => Principal::from_text(maybe_canister_id).ok(),
-        [maybe_canister_id, ..] => Principal::from_text(maybe_canister_id).ok(),
-        _ => None,
-    }
-}
-
-fn resolve_canister_id_from_uri(url: &hyper::Uri) -> Option<Principal> {
-    let (_, canister_id) = url::form_urlencoded::parse(url.query()?.as_bytes())
-        .find(|(name, _)| name == "canisterId")?;
-    Principal::from_text(canister_id.as_ref()).ok()
-}
-
-/// Try to resolve a canister ID from an HTTP Request. If it cannot be resolved,
-/// [None] will be returned.
-fn resolve_canister_id(
-    request: &Request<Body>,
-    dns_canister_config: &DnsCanisterConfig,
-) -> Option<Principal> {
-    // Look for subdomains if there's a host header.
-    if let Some(host_header) = request.headers().get("Host") {
-        if let Ok(host) = host_header.to_str() {
-            if let Some(canister_id) = resolve_canister_id_from_hostname(host, dns_canister_config)
-            {
-                return Some(canister_id);
-            }
-        }
-    }
-
-    // Look into the URI.
-    if let Some(canister_id) = resolve_canister_id_from_uri(request.uri()) {
-        return Some(canister_id);
-    }
-
-    // Look into the request by header.
-    if let Some(referer_header) = request.headers().get("referer") {
-        if let Ok(referer) = referer_header.to_str() {
-            if let Ok(referer_uri) = hyper::Uri::from_str(referer) {
-                if let Some(canister_id) = resolve_canister_id_from_uri(&referer_uri) {
-                    return Some(canister_id);
-                }
-            }
-        }
-    }
-
-    None
+    /// Address to expose Prometheus metrics on
+    /// Examples: 127.0.0.1:9090, [::1]:9090
+    #[clap(long)]
+    metrics_addr: Option<SocketAddr>,
 }
 
 fn decode_hash_tree(
@@ -274,10 +271,10 @@ fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> Heade
 async fn forward_request(
     request: Request<Body>,
     agent: Arc<Agent>,
-    dns_canister_config: &DnsCanisterConfig,
+    resolver: &dyn canister_id::Resolver<Body>,
     logger: slog::Logger,
 ) -> Result<Response<Body>, Box<dyn Error>> {
-    let canister_id = match resolve_canister_id(&request, dns_canister_config) {
+    let canister_id = match resolver.resolve(&request) {
         None => {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
@@ -312,7 +309,20 @@ async fn forward_request(
         })
         .collect::<Vec<_>>();
 
-    let entire_body = body::to_bytes(body).await?.to_vec();
+    // Limit request body size
+    let body = Limited::new(body, REQUEST_BODY_SIZE_LIMIT);
+    let entire_body = match hyper::body::to_bytes(body).await {
+        Ok(data) => data,
+        Err(err) => {
+            if err.downcast_ref::<LengthLimitError>().is_some() {
+                return Ok(Response::builder()
+                    .status(StatusCode::PAYLOAD_TOO_LARGE)
+                    .body(Body::from("Request size exceeds limit"))?);
+            }
+            return Err(err);
+        }
+    }
+    .to_vec();
 
     slog::trace!(logger, "<<");
     if logger.is_trace_enabled() {
@@ -355,6 +365,16 @@ async fn forward_request(
             }) => Err(Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(format!(r#"Replica Error ({}): "{}""#, reject_code, reject_message).into())
+                .unwrap())),
+            Err(AgentError::HttpError(HttpErrorPayload {
+                status: 451,
+                content_type,
+                content,
+            })) => Err(Ok(content_type
+                .into_iter()
+                .fold(Response::builder(), |r, c| r.header(CONTENT_TYPE, c))
+                .status(451)
+                .body(content.into())
                 .unwrap())),
             Err(e) => Err(Err(e.into())),
         }
@@ -727,16 +747,30 @@ fn unable_to_fetch_root_key() -> Result<Response<Body>, Box<dyn Error>> {
         .body("Unable to fetch root key".into())?)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_request(
+struct HandleRequest {
     ip_addr: IpAddr,
     request: Request<Body>,
     replica_url: String,
+    client: reqwest::Client,
     proxy_url: Option<String>,
-    dns_canister_config: Arc<DnsCanisterConfig>,
+    resolver: Arc<dyn canister_id::Resolver<Body>>,
     logger: slog::Logger,
     fetch_root_key: bool,
     debug: bool,
+}
+
+async fn handle_request(
+    HandleRequest {
+        ip_addr,
+        request,
+        replica_url,
+        client,
+        proxy_url,
+        resolver,
+        logger,
+        fetch_root_key,
+        debug,
+    }: HandleRequest,
 ) -> Result<Response<Body>, Infallible> {
     let request_uri_path = request.uri().path();
     let result = if request_uri_path.starts_with("/api/") {
@@ -765,14 +799,16 @@ async fn handle_request(
     } else {
         let agent = Arc::new(
             ic_agent::Agent::builder()
-                .with_transport(ReqwestHttpReplicaV2Transport::create(replica_url).unwrap())
+                .with_transport(
+                    ReqwestHttpReplicaV2Transport::create_with_client(replica_url, client).unwrap(),
+                )
                 .build()
                 .expect("Could not create agent..."),
         );
         if fetch_root_key && agent.fetch_root_key().await.is_err() {
             unable_to_fetch_root_key()
         } else {
-            forward_request(request, agent, dns_canister_config.as_ref(), logger.clone()).await
+            forward_request(request, agent, resolver.as_ref(), logger.clone()).await
         }
     };
 
@@ -793,15 +829,218 @@ async fn handle_request(
     }
 }
 
+fn setup_http_client(
+    logger: &slog::Logger,
+    danger_accept_invalid_certs: bool,
+    root_certificates: &[PathBuf],
+    addr_mappings: Vec<OptResolve>,
+) -> reqwest::Client {
+    let builder = rustls::ClientConfig::builder().with_safe_defaults();
+    let mut tls_config = if !danger_accept_invalid_certs {
+        use rustls::Certificate;
+        use rustls::RootCertStore;
+
+        let mut root_cert_store = RootCertStore::empty();
+        for cert_path in root_certificates {
+            let mut buf = Vec::new();
+            if let Err(e) = File::open(cert_path).and_then(|mut v| v.read_to_end(&mut buf)) {
+                slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: {}",
+                    cert_path.display(),
+                    e
+                );
+                continue;
+            }
+            match cert_path.extension() {
+                Some(v) if v == "pem" => {
+                    slog::info!(
+                        logger,
+                        "adding PEM cert `{}` to root certificates",
+                        cert_path.display()
+                    );
+                    let mut pem = Cursor::new(buf);
+                    let certs = match rustls_pemfile::certs(&mut pem) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            slog::warn!(
+                                logger,
+                                "No valid certificate was found `{}`: {}",
+                                cert_path.display(),
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    for c in certs {
+                        if let Err(e) = root_cert_store.add(&rustls::Certificate(c)) {
+                            slog::warn!(
+                                logger,
+                                "Could not add part of cert `{}`: {}",
+                                cert_path.display(),
+                                e
+                            );
+                        }
+                    }
+                }
+                Some(v) if v == "der" => {
+                    slog::info!(
+                        logger,
+                        "adding DER cert `{}` to root certificates",
+                        cert_path.display()
+                    );
+                    if let Err(e) = root_cert_store.add(&Certificate(buf)) {
+                        slog::warn!(
+                            logger,
+                            "Could not add cert `{}`: {}",
+                            cert_path.display(),
+                            e
+                        );
+                    }
+                }
+                _ => slog::warn!(
+                    logger,
+                    "Could not load cert `{}`: unknown extension",
+                    cert_path.display()
+                ),
+            }
+        }
+
+        use rustls::OwnedTrustAnchor;
+        let trust_anchors = webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|trust_anchor| {
+            OwnedTrustAnchor::from_subject_spki_name_constraints(
+                trust_anchor.subject,
+                trust_anchor.spki,
+                trust_anchor.name_constraints,
+            )
+        });
+        root_cert_store.add_server_trust_anchors(trust_anchors);
+
+        builder
+            .with_root_certificates(root_cert_store)
+            .with_no_client_auth()
+    } else {
+        use rustls::client::HandshakeSignatureValid;
+        use rustls::client::ServerCertVerified;
+        use rustls::client::ServerCertVerifier;
+        use rustls::client::ServerName;
+        use rustls::internal::msgs::handshake::DigitallySignedStruct;
+
+        slog::warn!(logger, "Allowing invalid certs. THIS VERY IS INSECURE.");
+        struct NoVerifier;
+
+        impl ServerCertVerifier for NoVerifier {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &rustls::Certificate,
+                _intermediates: &[rustls::Certificate],
+                _server_name: &ServerName,
+                _scts: &mut dyn Iterator<Item = &[u8]>,
+                _ocsp_response: &[u8],
+                _now: std::time::SystemTime,
+            ) -> Result<ServerCertVerified, rustls::Error> {
+                Ok(ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::Certificate,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::Certificate,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+        }
+        builder
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
+    };
+
+    // Advertise support for HTTP/2
+    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
+
+    // Setup DNS
+    let builder = addr_mappings
+        .into_iter()
+        .fold(builder, |builder, OptResolve { domain, addr }| {
+            builder.resolve(&domain, addr)
+        });
+
+    builder.build().expect("Could not create HTTP client.")
+}
+
+#[derive(Clone)]
+struct MetricsHandlerArgs {
+    exporter: PrometheusExporter,
+}
+
+async fn metrics_handler(
+    Extension(MetricsHandlerArgs { exporter }): Extension<MetricsHandlerArgs>,
+    _: Request<Body>,
+) -> Response<Body> {
+    let metric_families = exporter.registry().gather();
+
+    let encoder = TextEncoder::new();
+
+    let mut metrics_text = Vec::new();
+    if encoder.encode(&metric_families, &mut metrics_text).is_err() {
+        return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body("Internal Server Error".into())
+            .unwrap();
+    };
+
+    Response::builder()
+        .status(200)
+        .body(metrics_text.into())
+        .unwrap()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let opts: Opts = Opts::parse();
 
     let logger = logging::setup_logging(&opts);
 
+    let client = setup_http_client(
+        &logger,
+        opts.danger_accept_invalid_ssl,
+        &opts.ssl_root_certificate,
+        opts.replica_resolve,
+    );
+    // Setup metrics
+    let exporter = opentelemetry_prometheus::exporter()
+        .with_resource(Resource::new(vec![KeyValue::new("service", "prober")]))
+        .init();
+
+    let metrics_addr = opts.metrics_addr;
+    let create_metrics_server = move || {
+        OptionFuture::from(metrics_addr.map(|metrics_addr| {
+            let metrics_handler = metrics_handler.layer(Extension(MetricsHandlerArgs { exporter }));
+            let metrics_router = Router::new().route("/metrics", get(metrics_handler));
+
+            axum::Server::bind(&metrics_addr).serve(metrics_router.into_make_service())
+        }))
+    };
+
     // Prepare a list of agents for each backend replicas.
     let replicas = Mutex::new(opts.replica.clone());
 
-    let dns_canister_config = Arc::new(DnsCanisterConfig::new(&opts.dns_alias, &opts.dns_suffix)?);
+    let dns = DnsCanisterConfig::new(&opts.dns_alias, &opts.dns_suffix)?;
+    let resolver = Arc::new(canister_id::DefaultResolver {
+        dns,
+        check_params: !opts.ignore_url_canister_param,
+    });
 
     let counter = AtomicUsize::new(0);
     let debug = opts.debug;
@@ -811,7 +1050,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let service = make_service_fn(|socket: &hyper::server::conn::AddrStream| {
         let ip_addr = socket.remote_addr();
         let ip_addr = ip_addr.ip();
-        let dns_canister_config = dns_canister_config.clone();
+        let resolver = resolver.clone();
         let logger = logger.clone();
 
         // Select an agent.
@@ -824,38 +1063,41 @@ fn main() -> Result<(), Box<dyn Error>> {
         slog::debug!(logger, "Replica URL: {}", replica_url);
 
         let proxy_url = proxy_url.clone();
+        let client = client.clone();
 
         async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
+            Ok::<_, Infallible>(service_fn(move |request| {
                 let logger = logger.clone();
-                let dns_canister_config = dns_canister_config.clone();
-                handle_request(
+                let resolver = resolver.clone();
+                handle_request(HandleRequest {
                     ip_addr,
-                    req,
-                    replica_url.clone(),
-                    proxy_url.clone(),
-                    dns_canister_config,
+                    request,
+                    replica_url: replica_url.clone(),
+                    client: client.clone(),
+                    proxy_url: proxy_url.clone(),
+                    resolver,
                     logger,
                     fetch_root_key,
                     debug,
-                )
+                })
             }))
         }
     });
 
-    slog::info!(
-        logger,
-        "Starting server. Listening on http://{}/",
-        opts.address
-    );
+    let address = opts.address;
+    slog::info!(logger, "Starting server. Listening on http://{}/", address);
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(10)
         .enable_all()
         .build()?;
-    runtime.block_on(async {
-        let server = Server::bind(&opts.address).serve(service);
-        server.await?;
+
+    rt.block_on(async {
+        try_join!(
+            create_metrics_server().map(|v| v.transpose()), // metrics
+            Server::bind(&address).serve(service),          // icx
+        )?;
+
         Ok(())
     })
 }

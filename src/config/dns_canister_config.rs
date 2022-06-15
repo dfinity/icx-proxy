@@ -25,25 +25,17 @@ impl DnsCanisterConfig {
         }
         // Check suffixes first (via stable sort), because they will only match
         // if actually preceded by a canister id.
-        rules.sort_by_key(|x| Reverse(x.dns_suffix.len()));
+        rules.sort_by_key(|x| Reverse(x.dns_suffix().len()));
         Ok(DnsCanisterConfig { rules })
     }
 
-    /// Return the Principal of the canister that matches the host name.
+    /// Return the Principal of the canister that matches the hostname.
     ///
-    /// split_hostname is expected to be the hostname split by '.',
-    /// but may contain upper- or lower-case characters.
-    pub fn resolve_canister_id_from_split_hostname(
-        &self,
-        split_hostname: &[&str],
-    ) -> Option<Principal> {
-        let split_hostname_lowercase: Vec<String> = split_hostname
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect();
+    /// `hostname` may contain uppercase or lowercase characters.
+    pub fn resolve_canister_id(&self, hostname: &str) -> Option<Principal> {
         self.rules
             .iter()
-            .find_map(|rule| rule.lookup(&split_hostname_lowercase))
+            .find_map(|rule| rule.lookup(hostname.split('.')))
     }
 }
 
@@ -59,8 +51,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(
-            dns_aliases
-                .resolve_canister_id_from_split_hostname(&["happy", "little", "domain", "name"]),
+            dns_aliases.resolve_canister_id("happy.little.domain.name"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         )
     }
@@ -71,8 +62,7 @@ mod tests {
             parse_dns_aliases(vec!["little.domain.name:r7inp-6aaaa-aaaaa-aaabq-cai"]).unwrap();
 
         assert_eq!(
-            dns_aliases
-                .resolve_canister_id_from_split_hostname(&["happy", "little", "domain", "name"]),
+            dns_aliases.resolve_canister_id("happy.little.domain.name"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         )
     }
@@ -85,8 +75,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            dns_aliases
-                .resolve_canister_id_from_split_hostname(&["happy", "little", "domain", "name"]),
+            dns_aliases.resolve_canister_id("happy.little.domain.name"),
             None
         )
     }
@@ -97,8 +86,7 @@ mod tests {
             parse_dns_aliases(vec!["lItTlE.doMain.nAMe:r7inp-6aaaa-aaaaa-aaabq-cai"]).unwrap();
 
         assert_eq!(
-            dns_aliases
-                .resolve_canister_id_from_split_hostname(&["hAPpy", "littLE", "doMAin", "NAme"]),
+            dns_aliases.resolve_canister_id("happy.little.domain.name"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         )
     }
@@ -112,19 +100,17 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            dns_aliases
-                .resolve_canister_id_from_split_hostname(&["happy", "little", "domain", "name"]),
+            dns_aliases.resolve_canister_id("happy.little.domain.name"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
 
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["ecstatic", "domain", "name"]),
+            dns_aliases.resolve_canister_id("ecstatic.domain.name"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
 
         assert_eq!(
-            dns_aliases
-                .resolve_canister_id_from_split_hostname(&["super", "ecstatic", "domain", "name"]),
+            dns_aliases.resolve_canister_id("super.ecstatic.domain.name"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         )
     }
@@ -138,17 +124,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["specific", "of", "many"]),
+            dns_aliases.resolve_canister_id("specific.of.many"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
         assert_eq!(
-            dns_aliases
-                .resolve_canister_id_from_split_hostname(&["more", "specific", "of", "many"]),
+            dns_aliases.resolve_canister_id("more.specific.of.many"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
 
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["another", "of", "many"]),
+            dns_aliases.resolve_canister_id("another.of.many"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         )
     }
@@ -164,11 +149,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["a", "b", "c"]),
+            dns_aliases.resolve_canister_id("a.b.c"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["d", "b", "c"]),
+            dns_aliases.resolve_canister_id("d.b.c"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
     }
@@ -184,11 +169,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["a", "b", "c"]),
+            dns_aliases.resolve_canister_id("a.b.c"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["d", "b", "c"]),
+            dns_aliases.resolve_canister_id("d.b.c"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
     }
@@ -204,11 +189,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["a", "x", "c"]),
+            dns_aliases.resolve_canister_id("a.x.c"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["d", "x", "c"]),
+            dns_aliases.resolve_canister_id("d.x.c"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
     }
@@ -224,11 +209,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["x", "a", "c"]),
+            dns_aliases.resolve_canister_id("x.a.c"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
         assert_eq!(
-            dns_aliases.resolve_canister_id_from_split_hostname(&["d", "a", "c"]),
+            dns_aliases.resolve_canister_id("d.a.c"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
     }
@@ -238,17 +223,11 @@ mod tests {
         let config = parse_config(vec![], vec!["localhost"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "rrkah-fqaaa-aaaaa-aaaaq-cai",
-                "localhost"
-            ]),
+            config.resolve_canister_id("rrkah-fqaaa-aaaaa-aaaaq-cai.localhost"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "r7inp-6aaaa-aaaaa-aaabq-cai",
-                "localhost"
-            ]),
+            config.resolve_canister_id("r7inp-6aaaa-aaaaa-aaabq-cai.localhost"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         )
     }
@@ -258,20 +237,11 @@ mod tests {
         let config = parse_config(vec![], vec!["localhost"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "more",
-                "rrkah-fqaaa-aaaaa-aaaaq-cai",
-                "localhost"
-            ]),
+            config.resolve_canister_id("more.rrkah-fqaaa-aaaaa-aaaaq-cai.localhost"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "even",
-                "more",
-                "r7inp-6aaaa-aaaaa-aaabq-cai",
-                "localhost"
-            ]),
+            config.resolve_canister_id("even.more.r7inp-6aaaa-aaaaa-aaabq-cai.localhost"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         )
     }
@@ -281,11 +251,7 @@ mod tests {
         let config = parse_config(vec![], vec!["localhost"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "rrkah-fqaaa-aaaaa-aaaaq-cai",
-                "nope",
-                "localhost"
-            ]),
+            config.resolve_canister_id("rrkah-fqaaa-aaaaa-aaaaq-cai.nope.localhost"),
             None
         );
     }
@@ -295,12 +261,7 @@ mod tests {
         let config = parse_config(vec![], vec!["a.b.c"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "rrkah-fqaaa-aaaaa-aaaaq-cai",
-                "a",
-                "b",
-                "c"
-            ]),
+            config.resolve_canister_id("rrkah-fqaaa-aaaaa-aaaaq-cai.a.b.c"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
     }
@@ -310,13 +271,7 @@ mod tests {
         let config = parse_config(vec![], vec!["a.b.c"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "rrkah-fqaaa-aaaaa-aaaaq-cai",
-                "no",
-                "a",
-                "b",
-                "c"
-            ]),
+            config.resolve_canister_id("rrkah-fqaaa-aaaaa-aaaaq-cai.no.a.b.c"),
             None
         );
     }
@@ -326,13 +281,7 @@ mod tests {
         let config = parse_config(vec![], vec!["a.b.c"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "yes",
-                "rrkah-fqaaa-aaaaa-aaaaq-cai",
-                "a",
-                "b",
-                "c"
-            ]),
+            config.resolve_canister_id("yes.rrkah-fqaaa-aaaaa-aaaaq-cai.a.b.c"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
     }
@@ -342,13 +291,9 @@ mod tests {
         let config = parse_config(vec![], vec!["a.b.c"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "r7inp-6aaaa-aaaaa-aaabq-cai", // not seen/returned
-                "rrkah-fqaaa-aaaaa-aaaaq-cai",
-                "a",
-                "b",
-                "c"
-            ]),
+            config.resolve_canister_id(
+                "r7inp-6aaaa-aaaaa-aaabq-cai.rrkah-fqaaa-aaaaa-aaaaq-cai.a.b.c"
+            ),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
     }
@@ -365,20 +310,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&["a", "b", "c"]),
+            config.resolve_canister_id("a.b.c"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&["d", "e",]),
+            config.resolve_canister_id("d.e"),
             Some(Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap())
         );
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "ryjl3-tyaaa-aaaaa-aaaba-cai",
-                "g",
-                "h",
-                "i",
-            ]),
+            config.resolve_canister_id("ryjl3-tyaaa-aaaaa-aaaba-cai.g.h.i"),
             Some(Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap())
         );
     }
@@ -390,23 +330,17 @@ mod tests {
             parse_config(vec!["a.b.c:r7inp-6aaaa-aaaaa-aaabq-cai"], vec!["a.b.c"]).unwrap();
 
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&["a", "b", "c"]),
+            config.resolve_canister_id("a.b.c"),
             Some(Principal::from_text("r7inp-6aaaa-aaaaa-aaabq-cai").unwrap())
         );
         assert_eq!(
-            config.resolve_canister_id_from_split_hostname(&[
-                "ryjl3-tyaaa-aaaaa-aaaba-cai",
-                "a",
-                "b",
-                "c"
-            ]),
+            config.resolve_canister_id("ryjl3-tyaaa-aaaaa-aaaba-cai.a.b.c"),
             Some(Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap())
         );
     }
 
     fn parse_dns_aliases(aliases: Vec<&str>) -> anyhow::Result<DnsCanisterConfig> {
-        let aliases: Vec<String> = aliases.iter().map(|&s| String::from(s)).collect();
-        DnsCanisterConfig::new(&aliases, &[])
+        parse_config(aliases, vec![])
     }
 
     fn parse_config(aliases: Vec<&str>, suffixes: Vec<&str>) -> anyhow::Result<DnsCanisterConfig> {
