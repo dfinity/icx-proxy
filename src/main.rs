@@ -56,7 +56,7 @@ type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: usize = 1000;
 
 // Limit the number of Stream Callbacks buffered
-const STREAM_CALLBACK_BUFFFER: usize = 3;
+const STREAM_CALLBACK_BUFFFER: usize = 2;
 
 // The maximum length of a body we should log as tracing.
 const MAX_LOG_BODY_SIZE: usize = 100;
@@ -421,14 +421,17 @@ async fn forward_request(
     };
     let is_streaming = http_response.streaming_strategy.is_some();
     let response = if let Some(streaming_strategy) = http_response.streaming_strategy {
-        let agent = agent.clone();
-        let logger = logger.clone();
         let body = http_response.body;
         let body = futures::stream::once(async move { Ok(body) });
         let body = match streaming_strategy {
             StreamingStrategy::Callback(callback) => body::Body::wrap_stream(
                 body.chain(futures::stream::try_unfold(
-                    (logger, agent, callback.callback.0, Some(callback.token)),
+                    (
+                        logger.clone(),
+                        agent.clone(),
+                        callback.callback.0,
+                        Some(callback.token),
+                    ),
                     move |(logger, agent, callback, callback_token)| async move {
                         let callback_token = if let Some(callback_token) = callback_token {
                             callback_token
