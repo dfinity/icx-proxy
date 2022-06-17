@@ -428,16 +428,16 @@ async fn forward_request(
                 body.chain(futures::stream::try_unfold(
                     (
                         logger.clone(),
-                        agent.clone(),
+                        agent,
                         callback.callback.0,
                         Some(callback.token),
                     ),
                     move |(logger, agent, callback, callback_token)| async move {
-                        let callback_token = if let Some(callback_token) = callback_token {
-                            callback_token
-                        } else {
-                            return Ok(None);
+                        let callback_token = match callback_token {
+                            Some(callback_token) => callback_token,
+                            None => return Ok(None),
                         };
+
                         let canister = HttpRequestCanister::create(&agent, callback.principal);
                         match canister
                             .http_request_stream_callback(&callback.method, callback_token)
