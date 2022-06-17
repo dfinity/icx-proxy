@@ -1,11 +1,10 @@
 use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::{crate_authors, crate_version, Parser};
 use flate2::read::{DeflateDecoder, GzDecoder};
-use futures::{future::OptionFuture, try_join, FutureExt};
+use futures::{future::OptionFuture, try_join, FutureExt, StreamExt};
 use http_body::{LengthLimitError, Limited};
 use hyper::{
     body,
-    body::Bytes,
     http::{header::CONTENT_TYPE, uri::Parts},
     service::{make_service_fn, service_fn},
     Body, Client, Request, Response, Server, StatusCode, Uri,
@@ -54,7 +53,10 @@ use crate::config::dns_canister_config::DnsCanisterConfig;
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
 // Limit the total number of calls to an HTTP Request loop to 1000 for now.
-const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: i32 = 1000;
+const MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT: usize = 1000;
+
+// Limit the number of Stream Callbacks buffered
+const STREAM_CALLBACK_BUFFFER: usize = 2;
 
 // The maximum length of a body we should log as tracing.
 const MAX_LOG_BODY_SIZE: usize = 100;
@@ -419,53 +421,44 @@ async fn forward_request(
     };
     let is_streaming = http_response.streaming_strategy.is_some();
     let response = if let Some(streaming_strategy) = http_response.streaming_strategy {
-        let (mut sender, body) = body::Body::channel();
-        let agent = agent.as_ref().clone();
-        sender.send_data(Bytes::from(http_response.body)).await?;
+        let body = http_response.body;
+        let body = futures::stream::once(async move { Ok(body) });
+        let body = match streaming_strategy {
+            StreamingStrategy::Callback(callback) => body::Body::wrap_stream(
+                body.chain(futures::stream::try_unfold(
+                    (
+                        logger.clone(),
+                        agent,
+                        callback.callback.0,
+                        Some(callback.token),
+                    ),
+                    move |(logger, agent, callback, callback_token)| async move {
+                        let callback_token = match callback_token {
+                            Some(callback_token) => callback_token,
+                            None => return Ok(None),
+                        };
 
-        match streaming_strategy {
-            StreamingStrategy::Callback(callback) => {
-                let streaming_canister_id = callback.callback.0.principal;
-                let method_name = callback.callback.0.method;
-                let mut callback_token = callback.token;
-                let logger = logger.clone();
-                tokio::spawn(async move {
-                    let canister = HttpRequestCanister::create(&agent, streaming_canister_id);
-                    // We have not yet called http_request_stream_callback.
-                    let mut count = 0;
-                    loop {
-                        count += 1;
-                        if count > MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT {
-                            sender.abort();
-                            break;
-                        }
-
+                        let canister = HttpRequestCanister::create(&agent, callback.principal);
                         match canister
-                            .http_request_stream_callback(&method_name, callback_token)
+                            .http_request_stream_callback(&callback.method, callback_token)
                             .call()
                             .await
                         {
                             Ok((StreamingCallbackHttpResponse { body, token },)) => {
-                                if sender.send_data(Bytes::from(body)).await.is_err() {
-                                    sender.abort();
-                                    break;
-                                }
-                                if let Some(next_token) = token {
-                                    callback_token = next_token;
-                                } else {
-                                    break;
-                                }
+                                Ok(Some((body, (logger, agent, callback, token))))
                             }
                             Err(e) => {
-                                slog::debug!(logger, "Error happened during streaming: {}", e);
-                                sender.abort();
-                                break;
+                                slog::warn!(logger, "Error happened during streaming: {}", e);
+                                Err(e)
                             }
                         }
-                    }
-                });
-            }
-        }
+                    },
+                ))
+                .take(MAX_HTTP_REQUEST_STREAM_CALLBACK_CALL_COUNT)
+                .map(|x| async move { x })
+                .buffered(STREAM_CALLBACK_BUFFFER),
+            ),
+        };
 
         builder.body(body)?
     } else {
