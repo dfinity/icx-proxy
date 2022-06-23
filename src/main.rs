@@ -71,6 +71,7 @@ const KB: usize = 1024;
 const MB: usize = 1024 * KB;
 
 const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
+const RESPONSE_BODY_SIZE_LIMIT: usize = 5 * MB;
 
 /// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
 /// `ic0.app=[::1]:9090`
@@ -800,14 +801,17 @@ async fn handle_request(
             not_found()
         }
     } else {
+        let transport = ReqwestHttpReplicaV2Transport::create_with_client(replica_url, client)
+            .expect("failed to create transport")
+            .with_max_response_body_size(RESPONSE_BODY_SIZE_LIMIT);
+
         let agent = Arc::new(
             ic_agent::Agent::builder()
-                .with_transport(
-                    ReqwestHttpReplicaV2Transport::create_with_client(replica_url, client).unwrap(),
-                )
+                .with_transport(transport)
                 .build()
                 .expect("Could not create agent..."),
         );
+
         if fetch_root_key && agent.fetch_root_key().await.is_err() {
             unable_to_fetch_root_key()
         } else {

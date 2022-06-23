@@ -879,17 +879,19 @@ dependencies = [
 
 [[package]]
 name = "ic-agent"
-version = "0.17.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a0cabf758d04a2389ffba0700bd7099de9b5cd47a04255063de1b0f9aac1f6e"
+checksum = "f084a526233000cc9c08ab1cb95e59a03d300fae638c185785d1daa1256cc9c8"
 dependencies = [
  "async-trait",
  "base32",
  "base64",
  "byteorder",
+ "futures-util",
  "garcon",
  "hex",
  "http",
+ "http-body",
  "hyper-rustls",
  "ic-types",
  "k256",
@@ -1782,6 +1784,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+ "tokio-util 0.6.9",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
