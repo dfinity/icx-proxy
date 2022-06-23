@@ -71,6 +71,7 @@ const KB: usize = 1024;
 const MB: usize = 1024 * KB;
 
 const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
+const RESPONSE_BODY_SIZE_LIMIT: usize = 10 * MB;
 
 /// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
 /// `ic0.app=[::1]:9090`
@@ -359,6 +360,7 @@ async fn forward_request(
         // leak here because a user could use `dfx` to get the same reply.
         match result {
             Ok((http_response,)) => Ok(http_response),
+
             Err(AgentError::ReplicaError {
                 reject_code,
                 reject_message,
@@ -366,6 +368,7 @@ async fn forward_request(
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(format!(r#"Replica Error ({}): "{}""#, reject_code, reject_message).into())
                 .unwrap())),
+
             Err(AgentError::HttpError(HttpErrorPayload {
                 status: 451,
                 content_type,
@@ -376,6 +379,12 @@ async fn forward_request(
                 .status(451)
                 .body(content.into())
                 .unwrap())),
+
+            Err(AgentError::ResponseSizeExceededLimit()) => Err(Ok(Response::builder()
+                .status(StatusCode::INSUFFICIENT_STORAGE)
+                .body("Response size exceeds limit".into())
+                .unwrap())),
+
             Err(e) => Err(Err(e.into())),
         }
     }
@@ -800,14 +809,17 @@ async fn handle_request(
             not_found()
         }
     } else {
+        let transport = ReqwestHttpReplicaV2Transport::create_with_client(replica_url, client)
+            .expect("failed to create transport")
+            .with_max_response_body_size(RESPONSE_BODY_SIZE_LIMIT);
+
         let agent = Arc::new(
             ic_agent::Agent::builder()
-                .with_transport(
-                    ReqwestHttpReplicaV2Transport::create_with_client(replica_url, client).unwrap(),
-                )
+                .with_transport(transport)
                 .build()
                 .expect("Could not create agent..."),
         );
+
         if fetch_root_key && agent.fetch_root_key().await.is_err() {
             unable_to_fetch_root_key()
         } else {
