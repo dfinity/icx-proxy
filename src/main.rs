@@ -71,7 +71,7 @@ const KB: usize = 1024;
 const MB: usize = 1024 * KB;
 
 const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
-const RESPONSE_BODY_SIZE_LIMIT: usize = 5 * MB;
+const RESPONSE_BODY_SIZE_LIMIT: usize = 10 * MB;
 
 /// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
 /// `ic0.app=[::1]:9090`
