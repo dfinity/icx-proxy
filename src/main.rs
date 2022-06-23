@@ -360,6 +360,7 @@ async fn forward_request(
         // leak here because a user could use `dfx` to get the same reply.
         match result {
             Ok((http_response,)) => Ok(http_response),
+
             Err(AgentError::ReplicaError {
                 reject_code,
                 reject_message,
@@ -367,6 +368,7 @@ async fn forward_request(
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(format!(r#"Replica Error ({}): "{}""#, reject_code, reject_message).into())
                 .unwrap())),
+
             Err(AgentError::HttpError(HttpErrorPayload {
                 status: 451,
                 content_type,
@@ -377,6 +379,12 @@ async fn forward_request(
                 .status(451)
                 .body(content.into())
                 .unwrap())),
+
+            Err(AgentError::ResponseSizeExceededLimit()) => Err(Ok(Response::builder()
+                .status(StatusCode::INSUFFICIENT_STORAGE)
+                .body("Response size exceeds limit".into())
+                .unwrap())),
+
             Err(e) => Err(Err(e.into())),
         }
     }
