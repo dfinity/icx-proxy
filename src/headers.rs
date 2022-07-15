@@ -4,6 +4,7 @@ use lazy_regex::regex_captures;
 const MAX_LOG_CERT_NAME_SIZE: usize = 100;
 const MAX_LOG_CERT_B64_SIZE: usize = 2000;
 
+#[derive(Debug, PartialEq)]
 pub struct HeadersData {
     pub certificate: Option<Result<Vec<u8>, ()>>,
     pub tree: Option<Result<Vec<u8>, ()>>,
@@ -18,7 +19,7 @@ pub fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> H
     };
 
     for HeaderField(name, value) in headers {
-        if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
+        if name.eq_ignore_ascii_case("Ic-Certificate") {
             for field in value.split(',') {
                 if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
                     slog::trace!(
@@ -71,7 +72,7 @@ pub fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> H
                     }
                 }
             }
-        } else if name.eq_ignore_ascii_case("CONTENT-ENCODING") {
+        } else if name.eq_ignore_ascii_case("Content-Encoding") {
             let enc = value.trim().to_string();
             headers_data.encoding = Some(enc);
         }
@@ -90,5 +91,47 @@ fn decode_hash_tree(
             slog::warn!(logger, "Unable to decode {} from base64: {}", name, e);
         }),
         _ => Err(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ic_utils::interfaces::http_request::HeaderField;
+    use slog::o;
+
+    use super::{extract_headers_data, HeadersData};
+
+    #[test]
+    fn extract_headers_data_simple() {
+        let logger = slog::Logger::root(slog::Discard, o!());
+        let headers: Vec<HeaderField> = vec![];
+
+        let out = extract_headers_data(&headers, &logger);
+
+        assert_eq!(
+            out,
+            HeadersData {
+                certificate: None,
+                tree: None,
+                encoding: None,
+            }
+        );
+    }
+
+    #[test]
+    fn extract_headers_data_content_encoding() {
+        let logger = slog::Logger::root(slog::Discard, o!());
+        let headers: Vec<HeaderField> = vec![HeaderField("Content-Encoding".into(), "test".into())];
+
+        let out = extract_headers_data(&headers, &logger);
+
+        assert_eq!(
+            out,
+            HeadersData {
+                certificate: None,
+                tree: None,
+                encoding: Some(String::from("test")),
+            }
+        );
     }
 }
