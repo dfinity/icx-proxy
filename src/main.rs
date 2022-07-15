@@ -21,7 +21,7 @@ use ic_utils::{
         StreamingCallbackHttpResponse, StreamingStrategy, Token,
     },
 };
-use opentelemetry::{sdk::Resource, KeyValue};
+use opentelemetry::{global, sdk::Resource, KeyValue};
 use opentelemetry_prometheus::PrometheusExporter;
 use prometheus::{Encoder, TextEncoder};
 use slog::Drain;
@@ -43,11 +43,13 @@ mod canister_id;
 mod config;
 mod headers;
 mod logging;
+mod metrics;
 mod validate;
 
 use crate::{
     config::dns_canister_config::DnsCanisterConfig,
     headers::{extract_headers_data, HeadersData},
+    metrics::{MetricParams, WithMetrics},
     validate::{Validate, Validator},
 };
 
@@ -801,6 +803,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let exporter = opentelemetry_prometheus::exporter()
         .with_resource(Resource::new(vec![KeyValue::new("service", "prober")]))
         .init();
+    let meter = global::meter("icx-proxy");
 
     let metrics_addr = opts.metrics_addr;
     let create_metrics_server = move || {
@@ -820,7 +823,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         dns,
         check_params: !opts.ignore_url_canister_param,
     });
-    let validator = Arc::new(Validator::new());
+
+    let validator = Validator::new();
+    let validator = WithMetrics(validator, MetricParams::new(&meter, "validator"));
+    let validator = Arc::new(validator);
 
     let counter = AtomicUsize::new(0);
     let debug = opts.debug;
