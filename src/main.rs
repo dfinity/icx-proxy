@@ -179,6 +179,7 @@ async fn forward_request(
     request: Request<Body>,
     agent: Arc<Agent>,
     resolver: &dyn canister_id::Resolver<Body>,
+    validator: &dyn Validate,
     logger: slog::Logger,
 ) -> Result<Response<Body>, Box<dyn Error>> {
     let canister_id = match resolver.resolve(&request) {
@@ -377,8 +378,6 @@ async fn forward_request(
 
         builder.body(body)?
     } else {
-        let validator = Validator::new();
-
         let body_valid = validator.validate(
             &headers_data,
             &canister_id,
@@ -521,6 +520,7 @@ struct HandleRequest {
     client: reqwest::Client,
     proxy_url: Option<String>,
     resolver: Arc<dyn canister_id::Resolver<Body>>,
+    validator: Arc<dyn Validate>,
     logger: slog::Logger,
     fetch_root_key: bool,
     debug: bool,
@@ -534,6 +534,7 @@ async fn handle_request(
         client,
         proxy_url,
         resolver,
+        validator,
         logger,
         fetch_root_key,
         debug,
@@ -578,7 +579,14 @@ async fn handle_request(
         if fetch_root_key && agent.fetch_root_key().await.is_err() {
             unable_to_fetch_root_key()
         } else {
-            forward_request(request, agent, resolver.as_ref(), logger.clone()).await
+            forward_request(
+                request,
+                agent,
+                resolver.as_ref(),
+                validator.as_ref(),
+                logger.clone(),
+            )
+            .await
         }
     };
 
@@ -812,6 +820,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         dns,
         check_params: !opts.ignore_url_canister_param,
     });
+    let validator = Arc::new(Validator::new());
 
     let counter = AtomicUsize::new(0);
     let debug = opts.debug;
@@ -822,6 +831,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let ip_addr = socket.remote_addr();
         let ip_addr = ip_addr.ip();
         let resolver = resolver.clone();
+        let validator = validator.clone();
         let logger = logger.clone();
 
         // Select an agent.
@@ -838,16 +848,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         async move {
             Ok::<_, Infallible>(service_fn(move |request| {
-                let logger = logger.clone();
-                let resolver = resolver.clone();
                 handle_request(HandleRequest {
                     ip_addr,
                     request,
                     replica_url: replica_url.clone(),
                     client: client.clone(),
                     proxy_url: proxy_url.clone(),
-                    resolver,
-                    logger,
+                    resolver: resolver.clone(),
+                    validator: validator.clone(),
+                    logger: logger.clone(),
                     fetch_root_key,
                     debug,
                 })

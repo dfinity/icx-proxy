@@ -14,7 +14,7 @@ use crate::HeadersData;
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
 const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
 
-pub trait Validate {
+pub trait Validate: Sync + Send {
     fn validate(
         &self,
         headers_data: &HeadersData,
@@ -76,11 +76,11 @@ impl Validate for Validator {
             (None, None) => Ok(()),
         };
 
-        if body_valid.is_err() && !cfg!(feature = "skip_body_verification") {
-            return body_valid;
+        if cfg!(feature = "skip_body_verification") {
+            return Ok(());
         }
 
-        Ok(())
+        body_valid
     }
 }
 
