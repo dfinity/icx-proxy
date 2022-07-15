@@ -36,7 +36,10 @@ impl<T: Validate> Validate for WithMetrics<T> {
             .0
             .validate(headers_data, canister_id, agent, uri, response_body, logger);
 
-        let status = if out.is_ok() { "ok" } else { "fail" };
+        let mut status = if out.is_ok() { "ok" } else { "fail" };
+        if cfg!(feature = "skip_body_verification") {
+            status = "skip";
+        }
 
         let labels = &[KeyValue::new("status", status)];
 
