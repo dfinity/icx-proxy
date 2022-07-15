@@ -48,7 +48,7 @@ mod validate;
 use crate::{
     config::dns_canister_config::DnsCanisterConfig,
     headers::{extract_headers_data, HeadersData},
-    validate::validate,
+    validate::{Validate, Validator},
 };
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
@@ -377,7 +377,9 @@ async fn forward_request(
 
         builder.body(body)?
     } else {
-        let body_valid = validate(
+        let validator = Validator::new();
+
+        let body_valid = validator.validate(
             &headers_data,
             &canister_id,
             &agent,

@@ -14,56 +14,79 @@ use crate::HeadersData;
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
 const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
 
+pub trait Validate {
+    fn validate(
+        &self,
+        headers_data: &HeadersData,
+        canister_id: &Principal,
+        agent: &Agent,
+        uri: &Uri,
+        response_body: &[u8],
+        logger: slog::Logger,
+    ) -> Result<(), String>;
+}
+
+pub struct Validator {}
+
+impl Validator {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Validate for Validator {
+    fn validate(
+        &self,
+        headers_data: &HeadersData,
+        canister_id: &Principal,
+        agent: &Agent,
+        uri: &Uri,
+        response_body: &[u8],
+        logger: slog::Logger,
+    ) -> Result<(), String> {
+        let body_sha = if let Some(body_sha) =
+            decode_body_to_sha256(response_body, headers_data.encoding.clone())
+        {
+            body_sha
+        } else {
+            return Err("Body could not be decoded".into());
+        };
+
+        let body_valid = match (
+            headers_data.certificate.as_ref(),
+            headers_data.tree.as_ref(),
+        ) {
+            (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
+                Certificates { certificate, tree },
+                canister_id,
+                agent,
+                uri,
+                &body_sha,
+                logger.clone(),
+            ) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("Body does not pass verification".to_string()),
+                Err(e) => Err(format!("Certificate validation failed: {}", e)),
+            },
+            (Some(_), _) | (_, Some(_)) => Err("Body does not pass verification".to_string()),
+
+            // TODO: Remove this (FOLLOW-483)
+            // Canisters don't have to provide certified variables
+            // This should change in the future, grandfathering in current implementations
+            (None, None) => Ok(()),
+        };
+
+        if body_valid.is_err() && !cfg!(feature = "skip_body_verification") {
+            return body_valid;
+        }
+
+        Ok(())
+    }
+}
+
 struct Certificates<'a> {
     certificate: &'a Vec<u8>,
     tree: &'a Vec<u8>,
-}
-
-pub fn validate(
-    headers_data: &HeadersData,
-    canister_id: &Principal,
-    agent: &Agent,
-    uri: &Uri,
-    response_body: &[u8],
-    logger: slog::Logger,
-) -> Result<(), String> {
-    let body_sha = if let Some(body_sha) =
-        decode_body_to_sha256(response_body, headers_data.encoding.clone())
-    {
-        body_sha
-    } else {
-        return Err("Body could not be decoded".into());
-    };
-
-    let body_valid = match (
-        headers_data.certificate.as_ref(),
-        headers_data.tree.as_ref(),
-    ) {
-        (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
-            Certificates { certificate, tree },
-            canister_id,
-            agent,
-            uri,
-            &body_sha,
-            logger.clone(),
-        ) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err("Body does not pass verification".to_string()),
-            Err(e) => Err(format!("Certificate validation failed: {}", e)),
-        },
-        (Some(_), _) | (_, Some(_)) => Err("Body does not pass verification".to_string()),
-
-        // TODO: Remove this (FOLLOW-483)
-        // Canisters don't have to provide certified variables
-        // This should change in the future, grandfathering in current implementations
-        (None, None) => Ok(()),
-    };
-
-    if body_valid.is_err() && !cfg!(feature = "skip_body_verification") {
-        return body_valid;
-    }
-
-    Ok(())
 }
 
 fn decode_body_to_sha256(body: &[u8], encoding: Option<String>) -> Option<[u8; 32]> {
