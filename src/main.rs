@@ -1,6 +1,5 @@
 use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::{crate_authors, crate_version, Parser};
-use flate2::read::{DeflateDecoder, GzDecoder};
 use futures::{future::OptionFuture, try_join, FutureExt, StreamExt};
 use http_body::{LengthLimitError, Limited};
 use hyper::{
@@ -12,9 +11,7 @@ use hyper::{
 use ic_agent::{
     agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
     agent_error::HttpErrorPayload,
-    export::Principal,
-    ic_types::{hash_tree::LookupResult, HashTree},
-    lookup_value, Agent, AgentError, Certificate,
+    Agent, AgentError,
 };
 use ic_utils::{
     call::AsyncCall,
@@ -24,11 +21,9 @@ use ic_utils::{
         StreamingCallbackHttpResponse, StreamingStrategy, Token,
     },
 };
-use lazy_regex::regex_captures;
 use opentelemetry::{sdk::Resource, KeyValue};
 use opentelemetry_prometheus::PrometheusExporter;
 use prometheus::{Encoder, TextEncoder};
-use sha2::{Digest, Sha256};
 use slog::Drain;
 use std::{
     convert::Infallible,
@@ -46,9 +41,15 @@ use std::{
 
 mod canister_id;
 mod config;
+mod headers;
 mod logging;
+mod validate;
 
-use crate::config::dns_canister_config::DnsCanisterConfig;
+use crate::{
+    config::dns_canister_config::DnsCanisterConfig,
+    headers::{extract_headers_data, HeadersData},
+    validate::validate,
+};
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
 
@@ -60,12 +61,6 @@ const STREAM_CALLBACK_BUFFFER: usize = 2;
 
 // The maximum length of a body we should log as tracing.
 const MAX_LOG_BODY_SIZE: usize = 100;
-const MAX_LOG_CERT_NAME_SIZE: usize = 100;
-const MAX_LOG_CERT_B64_SIZE: usize = 2000;
-
-// The limit of a buffer we should decompress ~10mb.
-const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
-const MAX_CHUNKS_TO_DECOMPRESS: u64 = 10_240;
 
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;
@@ -178,95 +173,6 @@ pub(crate) struct Opts {
     /// Examples: 127.0.0.1:9090, [::1]:9090
     #[clap(long)]
     metrics_addr: Option<SocketAddr>,
-}
-
-fn decode_hash_tree(
-    name: &str,
-    value: Option<String>,
-    logger: &slog::Logger,
-) -> Result<Vec<u8>, ()> {
-    match value {
-        Some(tree) => base64::decode(tree).map_err(|e| {
-            slog::warn!(logger, "Unable to decode {} from base64: {}", name, e);
-        }),
-        _ => Err(()),
-    }
-}
-
-struct HeadersData {
-    certificate: Option<Result<Vec<u8>, ()>>,
-    tree: Option<Result<Vec<u8>, ()>>,
-    encoding: Option<String>,
-}
-
-fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> HeadersData {
-    let mut headers_data = HeadersData {
-        certificate: None,
-        tree: None,
-        encoding: None,
-    };
-
-    for HeaderField(name, value) in headers {
-        if name.eq_ignore_ascii_case("IC-CERTIFICATE") {
-            for field in value.split(',') {
-                if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
-                    slog::trace!(
-                        logger,
-                        ">> certificate {:.l1$}: {:.l2$}",
-                        name,
-                        b64_value,
-                        l1 = MAX_LOG_CERT_NAME_SIZE,
-                        l2 = MAX_LOG_CERT_B64_SIZE
-                    );
-                    let bytes = decode_hash_tree(name, Some(b64_value.to_string()), logger);
-                    if name == "certificate" {
-                        headers_data.certificate = Some(match (headers_data.certificate, bytes) {
-                            (None, bytes) => bytes,
-                            (Some(Ok(certificate)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
-                                Ok(certificate)
-                            }
-                            (Some(Ok(certificate)), Err(_)) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
-                                Ok(certificate)
-                            }
-                            (Some(Err(_)), bytes) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
-                                bytes
-                            }
-                        });
-                    } else if name == "tree" {
-                        headers_data.tree = Some(match (headers_data.tree, bytes) {
-                            (None, bytes) => bytes,
-                            (Some(Ok(tree)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate tree field: {:?}", bytes);
-                                Ok(tree)
-                            }
-                            (Some(Ok(tree)), Err(_)) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
-                                Ok(tree)
-                            }
-                            (Some(Err(_)), bytes) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
-                                bytes
-                            }
-                        });
-                    }
-                }
-            }
-        } else if name.eq_ignore_ascii_case("CONTENT-ENCODING") {
-            let enc = value.trim().to_string();
-            headers_data.encoding = Some(enc);
-        }
-    }
-
-    headers_data
 }
 
 async fn forward_request(
@@ -521,159 +427,6 @@ async fn forward_request(
     }
 
     Ok(response)
-}
-
-fn validate(
-    headers_data: &HeadersData,
-    canister_id: &Principal,
-    agent: &Agent,
-    uri: &Uri,
-    response_body: &[u8],
-    logger: slog::Logger,
-) -> Result<(), String> {
-    let body_sha = if let Some(body_sha) =
-        decode_body_to_sha256(response_body, headers_data.encoding.clone())
-    {
-        body_sha
-    } else {
-        return Err("Body could not be decoded".into());
-    };
-
-    let body_valid = match (
-        headers_data.certificate.as_ref(),
-        headers_data.tree.as_ref(),
-    ) {
-        (Some(Ok(certificate)), Some(Ok(tree))) => match validate_body(
-            Certificates { certificate, tree },
-            canister_id,
-            agent,
-            uri,
-            &body_sha,
-            logger.clone(),
-        ) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err("Body does not pass verification".to_string()),
-            Err(e) => Err(format!("Certificate validation failed: {}", e)),
-        },
-        (Some(_), _) | (_, Some(_)) => Err("Body does not pass verification".to_string()),
-
-        // TODO: Remove this (FOLLOW-483)
-        // Canisters don't have to provide certified variables
-        // This should change in the future, grandfathering in current implementations
-        (None, None) => Ok(()),
-    };
-
-    if body_valid.is_err() && !cfg!(feature = "skip_body_verification") {
-        return body_valid;
-    }
-
-    Ok(())
-}
-
-fn decode_body_to_sha256(body: &[u8], encoding: Option<String>) -> Option<[u8; 32]> {
-    let mut sha256 = Sha256::new();
-    let mut decoded = [0u8; MAX_CHUNK_SIZE_TO_DECOMPRESS];
-    match encoding.as_deref() {
-        Some("gzip") => {
-            let mut decoder = GzDecoder::new(body);
-            for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
-                let bytes = decoder.read(&mut decoded).ok()?;
-                if bytes == 0 {
-                    return Some(sha256.finalize().into());
-                }
-                sha256.update(&decoded[0..bytes]);
-            }
-            if decoder.bytes().next().is_some() {
-                return None;
-            }
-        }
-        Some("deflate") => {
-            let mut decoder = DeflateDecoder::new(body);
-            for _ in 0..MAX_CHUNKS_TO_DECOMPRESS {
-                let bytes = decoder.read(&mut decoded).ok()?;
-                if bytes == 0 {
-                    return Some(sha256.finalize().into());
-                }
-                sha256.update(&decoded[0..bytes]);
-            }
-            if decoder.bytes().next().is_some() {
-                return None;
-            }
-        }
-        _ => sha256.update(body),
-    };
-    Some(sha256.finalize().into())
-}
-
-struct Certificates<'a> {
-    certificate: &'a Vec<u8>,
-    tree: &'a Vec<u8>,
-}
-
-fn validate_body(
-    certificates: Certificates,
-    canister_id: &Principal,
-    agent: &Agent,
-    uri: &Uri,
-    body_sha: &[u8; 32],
-    logger: slog::Logger,
-) -> anyhow::Result<bool> {
-    let cert: Certificate =
-        serde_cbor::from_slice(certificates.certificate).map_err(AgentError::InvalidCborData)?;
-    let tree: HashTree =
-        serde_cbor::from_slice(certificates.tree).map_err(AgentError::InvalidCborData)?;
-
-    if let Err(e) = agent.verify(&cert, *canister_id, false) {
-        slog::trace!(logger, ">> certificate failed verification: {}", e);
-        return Ok(false);
-    }
-
-    let certified_data_path = vec![
-        "canister".into(),
-        canister_id.into(),
-        "certified_data".into(),
-    ];
-    let witness = match lookup_value(&cert, certified_data_path) {
-        Ok(witness) => witness,
-        Err(e) => {
-            slog::trace!(
-                logger,
-                ">> Could not find certified data for this canister in the certificate: {}",
-                e
-            );
-            return Ok(false);
-        }
-    };
-    let digest = tree.digest();
-
-    if witness != digest {
-        slog::trace!(
-            logger,
-            ">> witness ({}) did not match digest ({})",
-            hex::encode(witness),
-            hex::encode(digest)
-        );
-
-        return Ok(false);
-    }
-
-    let path = ["http_assets".into(), uri.path().into()];
-    let tree_sha = match tree.lookup_path(&path) {
-        LookupResult::Found(v) => v,
-        _ => match tree.lookup_path(&["http_assets".into(), "/index.html".into()]) {
-            LookupResult::Found(v) => v,
-            _ => {
-                slog::trace!(
-                    logger,
-                    ">> Invalid Tree in the header. Does not contain path {:?}",
-                    path
-                );
-                return Ok(false);
-            }
-        },
-    };
-
-    Ok(body_sha == tree_sha)
 }
 
 fn is_hop_header(name: &str) -> bool {
@@ -1033,6 +786,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &opts.ssl_root_certificate,
         opts.replica_resolve,
     );
+
     // Setup metrics
     let exporter = opentelemetry_prometheus::exporter()
         .with_resource(Resource::new(vec![KeyValue::new("service", "prober")]))
