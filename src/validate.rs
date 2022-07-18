@@ -189,3 +189,40 @@ fn validate_body(
 
     Ok(body_sha == tree_sha)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use candid::Principal;
+    use hyper::Uri;
+    use ic_agent::{agent::http_transport::ReqwestHttpReplicaV2Transport, Agent};
+    use slog::o;
+
+    use crate::{
+        headers::HeadersData,
+        validate::{Validate, Validator},
+    };
+
+    #[test]
+    fn validate_nop() {
+        let headers = HeadersData {
+            certificate: None,
+            encoding: None,
+            tree: None,
+        };
+
+        let canister_id = Principal::from_text("wwc2m-2qaaa-aaaac-qaaaa-cai").unwrap();
+        let transport = ReqwestHttpReplicaV2Transport::create("http://www.example.com").unwrap();
+        let agent = Agent::builder().with_transport(transport).build().unwrap();
+        let uri = Uri::from_str("http://www.example.com").unwrap();
+        let body = vec![];
+        let logger = slog::Logger::root(slog::Discard, o!());
+
+        let validator = Validator::new();
+
+        let out = validator.validate(&headers, &canister_id, &agent, &uri, &body, logger);
+
+        assert_eq!(out, Ok(()));
+    }
+}
