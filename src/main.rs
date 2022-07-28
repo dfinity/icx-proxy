@@ -265,16 +265,27 @@ async fn forward_request(
     fn handle_result(
         result: Result<(HttpResponseAny,), AgentError>,
     ) -> Result<HttpResponseAny, Result<Response<Body>, Box<dyn Error>>> {
+        // https://internetcomputer.org/docs/current/references/ic-interface-spec#reject-codes
+        const DESTINATION_INVALID: u64 = 3;
+
         // If the result is a Replica error, returns the 500 code and message. There is no information
         // leak here because a user could use `dfx` to get the same reply.
         match result {
             Ok((http_response,)) => Ok(http_response),
 
             Err(AgentError::ReplicaError {
+                reject_code: DESTINATION_INVALID,
+                reject_message,
+            }) => Err(Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(reject_message.into())
+                .unwrap())),
+
+            Err(AgentError::ReplicaError {
                 reject_code,
                 reject_message,
             }) => Err(Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .status(StatusCode::BAD_GATEWAY)
                 .body(format!(r#"Replica Error ({}): "{}""#, reject_code, reject_message).into())
                 .unwrap())),
 
