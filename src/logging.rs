@@ -1,4 +1,4 @@
-use crate::Opts;
+use crate::{Opts, OptLogMode, OptLogFormat};
 use slog::{Drain, Level, LevelFilter, Logger};
 use std::{fs::File, path::PathBuf};
 
@@ -16,26 +16,46 @@ enum LoggingMode {
     File(PathBuf),
 }
 
-fn create_drain(mode: LoggingMode) -> Logger {
-    match mode {
-        LoggingMode::File(out) => {
+fn create_drain(mode: LoggingMode, format: OptLogFormat) -> Logger {
+    match (mode, format) {
+        (LoggingMode::File(out), OptLogFormat::Default | OptLogFormat::Full) => {
             let file = File::create(out).expect("Couldn't open log file");
             let decorator = slog_term::PlainDecorator::new(file);
             let drain = slog_term::FullFormat::new(decorator).build().fuse();
             Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
         }
+        (LoggingMode::File(out), OptLogFormat::Compact) => {
+            let file = File::create(out).expect("Couldn't open log file");
+            let decorator = slog_term::PlainDecorator::new(file);
+            let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+            Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
+        }
+        (LoggingMode::File(out), OptLogFormat::Json) => {
+            let file = File::create(out).expect("Couldn't open log file");
+            let drain = slog_json::Json::new(file).add_default_keys().build().fuse();
+            Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
+        }
         // A Tee mode is basically 2 drains duplicated.
-        LoggingMode::Tee(out) => Logger::root(
+        (LoggingMode::Tee(out), format) => Logger::root(
             slog::Duplicate::new(
-                create_drain(LoggingMode::Stderr),
-                create_drain(LoggingMode::File(out)),
+                create_drain(LoggingMode::Stderr, format),
+                create_drain(LoggingMode::File(out), format),
             )
             .fuse(),
             slog::o!(),
         ),
-        LoggingMode::Stderr => {
+        (LoggingMode::Stderr, OptLogFormat::Default | OptLogFormat::Compact) => {
             let decorator = slog_term::PlainDecorator::new(std::io::stderr());
             let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+            Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
+        }
+        (LoggingMode::Stderr, OptLogFormat::Full) => {
+            let decorator = slog_term::PlainDecorator::new(std::io::stderr());
+            let drain = slog_term::FullFormat::new(decorator).build().fuse();
+            Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
+        }
+        (LoggingMode::Stderr, OptLogFormat::Json) => {
+            let drain = slog_json::Json::new(std::io::stderr()).add_default_keys().build().fuse();
             Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
         }
     }
@@ -46,11 +66,10 @@ pub(crate) fn setup_logging(opts: &Opts) -> Logger {
     let verbose_level = opts.verbose as i64 - opts.quiet as i64;
     let logfile = opts.logfile.clone().unwrap_or_else(|| "log.txt".into());
 
-    let mode = match opts.logmode.as_str() {
-        "tee" => LoggingMode::Tee(logfile),
-        "file" => LoggingMode::File(logfile),
-        "stderr" => LoggingMode::Stderr,
-        _ => unreachable!("unhandled logmode"),
+    let mode = match opts.logmode {
+        OptLogMode::Tee => LoggingMode::Tee(logfile),
+        OptLogMode::File => LoggingMode::File(logfile),
+        OptLogMode::StdErr => LoggingMode::Stderr,
     };
 
     let log_level = match verbose_level {
@@ -70,7 +89,7 @@ pub(crate) fn setup_logging(opts: &Opts) -> Logger {
         }
     };
 
-    let drain = LevelFilter::new(create_drain(mode), log_level).fuse();
+    let drain = LevelFilter::new(create_drain(mode, opts.logformat), log_level).fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
 
     let root = Logger::root(drain, slog::o!("version" => clap::crate_version!()));

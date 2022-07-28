@@ -982,6 +982,7 @@ dependencies = [
  "sha2 0.10.2",
  "slog",
  "slog-async",
+ "slog-json",
  "slog-term",
  "tokio",
  "url",
@@ -2096,6 +2097,18 @@ dependencies = [
  "slog",
  "take_mut",
  "thread_local",
+]
+
+[[package]]
+name = "slog-json"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e1e53f61af1e3c8b852eef0a9dee29008f55d6dd63794f3f12cef786cf0f219"
+dependencies = [
+ "serde",
+ "serde_json",
+ "slog",
+ "time",
 ]
 
 [[package]]

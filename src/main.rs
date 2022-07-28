@@ -24,10 +24,11 @@ use ic_utils::{
 use opentelemetry::{global, sdk::Resource, KeyValue};
 use opentelemetry_prometheus::PrometheusExporter;
 use prometheus::{Encoder, TextEncoder};
-use slog::Drain;
+use slog::{Drain, Logger};
 use std::{
     convert::Infallible,
     error::Error,
+    fmt,
     fs::File,
     io::{Cursor, Read},
     net::{IpAddr, SocketAddr},
@@ -90,6 +91,21 @@ impl FromStr for OptResolve {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ArgEnum, Debug)]
+pub(crate) enum OptLogMode {
+    StdErr,
+    Tee,
+    File,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ArgEnum, Debug)]
+pub(crate) enum OptLogFormat {
+    Default,
+    Compact,
+    Full,
+    Json,
+}
+
 #[derive(Parser)]
 #[clap(
     version = crate_version!(),
@@ -110,8 +126,13 @@ pub(crate) struct Opts {
 
     /// Mode to use the logging. "stderr" will output logs in STDERR, "file" will output
     /// logs in a file, and "tee" will do both.
-    #[clap(long("log"), default_value("stderr"), possible_values(&["stderr", "tee", "file"]))]
-    logmode: String,
+    #[clap(arg_enum, long("log"), default_value_t = OptLogMode::StdErr)]
+    logmode: OptLogMode,
+
+    /// Mode to use the logging. "stderr" will output logs in STDERR, "file" will output
+    /// logs in a file, and "tee" will do both.
+    #[clap(arg_enum, long("logformat"), default_value_t = OptLogFormat::Default)]
+    logformat: OptLogFormat,
 
     /// File to output the log to, when using logmode=tee or logmode=file.
     #[clap(long)]
@@ -177,12 +198,61 @@ pub(crate) struct Opts {
     metrics_addr: Option<SocketAddr>,
 }
 
+struct DisplayOption<T>(pub Option<T>);
+
+impl<T: fmt::Display> fmt::Display for DisplayOption<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Some(ref v) = self.0 {
+            write!(f, "{}", v)?;
+        }
+        Ok(())
+    }
+}
+
+struct DisplayValue<T>(T);
+
+impl<T: fmt::Display> slog::Value for DisplayValue<T> {
+    fn serialize(
+        &self, 
+        _: &slog::Record<'_>, 
+        key: slog::Key, 
+        serializer: &mut dyn slog::Serializer
+    ) -> slog::Result {
+        serializer.emit_str(key, format!("{}", self.0).as_str())
+    }
+}
+struct DebugValue<T>(T);
+
+impl<T: fmt::Debug> slog::Value for DebugValue<T> {
+    fn serialize(
+        &self, 
+        _: &slog::Record<'_>, 
+        key: slog::Key, 
+        serializer: &mut dyn slog::Serializer
+    ) -> slog::Result {
+        serializer.emit_str(key, format!("{:?}", self.0).as_str())
+    }
+}
+
+struct StrValue<T>(T);
+
+impl<T: AsRef<str>> slog::Value for StrValue<T> {
+    fn serialize(
+        &self, 
+        _: &slog::Record<'_>, 
+        key: slog::Key, 
+        serializer: &mut dyn slog::Serializer
+    ) -> slog::Result {
+        serializer.emit_str(key, self.0.as_ref())
+    }
+}
+
 async fn forward_request(
+    logger: Logger,
     request: Request<Body>,
     agent: Arc<Agent>,
     resolver: &dyn canister_id::Resolver<Body>,
     validator: &dyn Validate,
-    logger: slog::Logger,
 ) -> Result<Response<Body>, Box<dyn Error>> {
     let canister_id = match resolver.resolve(&request) {
         None => {
@@ -193,14 +263,7 @@ async fn forward_request(
         }
         Some(x) => x,
     };
-
-    slog::trace!(
-        logger,
-        "<< {} {} {:?}",
-        request.method(),
-        request.uri(),
-        &request.version()
-    );
+    let logger = logger.new(slog::o!("canister" => DisplayValue(canister_id)));
 
     let (parts, body) = request.into_parts();
     let method = parts.method;
@@ -413,20 +476,19 @@ async fn forward_request(
 
         let body = body.unwrap_or_else(|| b"... streaming ...".to_vec());
 
+        let log_body = usize::min(MAX_LOG_BODY_SIZE, body.len());
+        let log_body = String::from_utf8_lossy(&body[..log_body]);
+        let log_body = log_body.escape_default();
+        let (log1, log2, log3) = if is_streaming {
+            ("... streaming", None, "")
+        } else if body.len() > MAX_LOG_BODY_SIZE {
+            ("... ", Some(body.len()), " bytes total")
+        } else {
+            ("", None, "")
+        };
+        let log2 = DisplayOption(log2);
         slog::trace!(logger, ">>");
-        slog::trace!(
-            logger,
-            ">> \"{}\"{}",
-            String::from_utf8_lossy(&body[..usize::min(MAX_LOG_BODY_SIZE, body.len())])
-                .escape_default(),
-            if is_streaming {
-                "... streaming".to_string()
-            } else if body.len() > MAX_LOG_BODY_SIZE {
-                format!("... {} bytes total", body.len())
-            } else {
-                String::new()
-            }
-        );
+        slog::trace!(logger, ">> \"{log_body}\"{log1}{log2}{log3}");
     }
 
     Ok(response)
@@ -516,6 +578,7 @@ fn unable_to_fetch_root_key() -> Result<Response<Body>, Box<dyn Error>> {
 }
 
 struct HandleRequest {
+    logger: Logger,
     ip_addr: IpAddr,
     request: Request<Body>,
     replica_url: String,
@@ -523,13 +586,13 @@ struct HandleRequest {
     proxy_url: Option<String>,
     resolver: Arc<dyn canister_id::Resolver<Body>>,
     validator: Arc<dyn Validate>,
-    logger: slog::Logger,
     fetch_root_key: bool,
     debug: bool,
 }
 
 async fn handle_request(
     HandleRequest {
+        logger,
         ip_addr,
         request,
         replica_url,
@@ -537,12 +600,16 @@ async fn handle_request(
         proxy_url,
         resolver,
         validator,
-        logger,
         fetch_root_key,
         debug,
     }: HandleRequest,
 ) -> Result<Response<Body>, Infallible> {
     let request_uri_path = request.uri().path();
+    let logger = logger.new(slog::o!(
+        "path" => request_uri_path.to_owned(),
+        "method" => StrValue(request.method().clone()),
+        "version" => DebugValue(request.version()),
+    ));
     let result = if request_uri_path.starts_with("/api/") {
         slog::debug!(
             logger,
@@ -582,11 +649,11 @@ async fn handle_request(
             unable_to_fetch_root_key()
         } else {
             forward_request(
+                logger.clone(),
                 request,
                 agent,
                 resolver.as_ref(),
                 validator.as_ref(),
-                logger.clone(),
             )
             .await
         }
@@ -610,7 +677,7 @@ async fn handle_request(
 }
 
 fn setup_http_client(
-    logger: &slog::Logger,
+    logger: &Logger,
     danger_accept_invalid_certs: bool,
     root_certificates: &[PathBuf],
     addr_mappings: Vec<OptResolve>,
@@ -855,6 +922,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         async move {
             Ok::<_, Infallible>(service_fn(move |request| {
                 handle_request(HandleRequest {
+                    logger: logger.clone(),
                     ip_addr,
                     request,
                     replica_url: replica_url.clone(),
@@ -862,7 +930,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     proxy_url: proxy_url.clone(),
                     resolver: resolver.clone(),
                     validator: validator.clone(),
-                    logger: logger.clone(),
                     fetch_root_key,
                     debug,
                 })
