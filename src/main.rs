@@ -70,6 +70,12 @@ const MB: usize = 1024 * KB;
 const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
 const RESPONSE_BODY_SIZE_LIMIT: usize = 10 * MB;
 
+/// https://internetcomputer.org/docs/current/references/ic-interface-spec#reject-codes
+struct ReplicaErrorCodes;
+impl ReplicaErrorCodes {
+    const DESTINATION_INVALID: u64 = 3;
+}
+
 /// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
 /// `ic0.app=[::1]:9090`
 pub(crate) struct OptResolve {
@@ -265,16 +271,13 @@ async fn forward_request(
     fn handle_result(
         result: Result<(HttpResponseAny,), AgentError>,
     ) -> Result<HttpResponseAny, Result<Response<Body>, Box<dyn Error>>> {
-        // https://internetcomputer.org/docs/current/references/ic-interface-spec#reject-codes
-        const DESTINATION_INVALID: u64 = 3;
-
         // If the result is a Replica error, returns the 500 code and message. There is no information
         // leak here because a user could use `dfx` to get the same reply.
         match result {
             Ok((http_response,)) => Ok(http_response),
 
             Err(AgentError::ReplicaError {
-                reject_code: DESTINATION_INVALID,
+                reject_code: ReplicaErrorCodes::DESTINATION_INVALID,
                 reject_message,
             }) => Err(Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
