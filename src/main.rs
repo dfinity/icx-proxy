@@ -70,6 +70,12 @@ const MB: usize = 1024 * KB;
 const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
 const RESPONSE_BODY_SIZE_LIMIT: usize = 10 * MB;
 
+/// https://internetcomputer.org/docs/current/references/ic-interface-spec#reject-codes
+struct ReplicaErrorCodes;
+impl ReplicaErrorCodes {
+    const DESTINATION_INVALID: u64 = 3;
+}
+
 /// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
 /// `ic0.app=[::1]:9090`
 pub(crate) struct OptResolve {
@@ -271,10 +277,18 @@ async fn forward_request(
             Ok((http_response,)) => Ok(http_response),
 
             Err(AgentError::ReplicaError {
+                reject_code: ReplicaErrorCodes::DESTINATION_INVALID,
+                reject_message,
+            }) => Err(Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(reject_message.into())
+                .unwrap())),
+
+            Err(AgentError::ReplicaError {
                 reject_code,
                 reject_message,
             }) => Err(Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .status(StatusCode::BAD_GATEWAY)
                 .body(format!(r#"Replica Error ({}): "{}""#, reject_code, reject_message).into())
                 .unwrap())),
 
