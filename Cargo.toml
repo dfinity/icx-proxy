@@ -30,8 +30,8 @@ http-body = "0.4.5"
 hyper = { version = "0.14", features = ["full"] }
 hyper-rustls = { version = "0.23", features = [ "webpki-roots" ] }
 hyper-tls = "0.5"
-ic-agent = "0.17.1"
-ic-utils = { version = "0.17", features = ["raw"] }
+ic-agent = "0.20"
+ic-utils = { version = "0.20", features = ["raw"] }
 lazy-regex = "2"
 opentelemetry = "0.17.0"
 opentelemetry-prometheus = "0.10.0"
