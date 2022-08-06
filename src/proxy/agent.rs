@@ -1,29 +1,17 @@
 use std::{
-    future::Future,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
 
-use anyhow::{bail, Context};
-use axum::{extract::ConnectInfo, handler::Handler, routing::any, Extension, Router};
-use clap::Args;
+use anyhow::bail;
+use axum::{extract::ConnectInfo, Extension};
 use futures::StreamExt;
 use http_body::{LengthLimitError, Limited};
-use hyper::{
-    body,
-    client::HttpConnector,
-    http::{header::CONTENT_TYPE, uri::Parts},
-    Body, Client, Request, Response, StatusCode, Uri,
-};
-use hyper_tls::HttpsConnector;
-use ic_agent::{
-    agent::http_transport::{reqwest, ReqwestHttpReplicaV2Transport},
-    agent_error::HttpErrorPayload,
-    Agent, AgentError,
-};
+use hyper::{body, http::header::CONTENT_TYPE, Body, Request, Response, StatusCode};
+use ic_agent::{agent_error::HttpErrorPayload, Agent, AgentError};
 use ic_utils::{
     call::{AsyncCall, SyncCall},
     interfaces::http_request::{
@@ -31,11 +19,13 @@ use ic_utils::{
         StreamingCallbackHttpResponse, StreamingStrategy, Token,
     },
 };
-use tracing::{enabled, error, info, instrument, trace, warn, Level};
+use tracing::{enabled, instrument, trace, warn, Level};
 
 use crate::{
-    canister_id::Resolver as CanisterIdResolver, headers::extract_headers_data,
-    logging::add_trace_layer, validate::Validate,
+    canister_id::Resolver as CanisterIdResolver,
+    headers::extract_headers_data,
+    proxy::{handle_error, REQUEST_BODY_SIZE_LIMIT},
+    validate::Validate,
 };
 
 type HttpResponseAny = HttpResponse<Token, HttpRequestStreamingCallbackAny>;
@@ -49,78 +39,45 @@ const STREAM_CALLBACK_BUFFFER: usize = 2;
 // The maximum length of a body we should log as tracing.
 const MAX_LOG_BODY_SIZE: usize = 100;
 
-const KB: usize = 1024;
-const MB: usize = 1024 * KB;
-
-const REQUEST_BODY_SIZE_LIMIT: usize = 10 * MB;
-const RESPONSE_BODY_SIZE_LIMIT: usize = 10 * MB;
-
 /// https://internetcomputer.org/docs/current/references/ic-interface-spec#reject-codes
 struct ReplicaErrorCodes;
 impl ReplicaErrorCodes {
     const DESTINATION_INVALID: u64 = 3;
 }
 
-/// The options for the proxy server
-#[derive(Args)]
-pub struct Opts {
-    /// The address to bind to.
-    #[clap(long, default_value = "127.0.0.1:3000")]
-    address: SocketAddr,
-
-    /// A replica to use as backend. Locally, this should be a local instance or the
-    /// boundary node. Multiple replicas can be passed and they'll be used round-robin.
-    #[clap(long, default_value = "http://localhost:8000/")]
-    replica: Vec<String>,
-
-    /// An address to forward any requests from /_/
-    #[clap(long)]
-    proxy: Option<Uri>,
-
-    /// Whether or not this is run in a debug context (e.g. errors returned in responses
-    /// should show full stack and error details).
-    #[clap(long)]
-    debug: bool,
-
-    /// Whether or not to fetch the root key from the replica back end. Do not use this when
-    /// talking to the Internet Computer blockchain mainnet as it is unsecure.
-    #[clap(long)]
-    fetch_root_key: bool,
+pub struct ArgsInner {
+    pub validator: Box<dyn Validate>,
+    pub resolver: Box<dyn CanisterIdResolver<Body>>,
+    pub counter: AtomicUsize,
+    pub replicas: Vec<(Agent, String)>,
+    pub debug: bool,
+    pub fetch_root_key: bool,
 }
 
-struct ProcessArgsInner {
-    validator: Box<dyn Validate>,
-    resolver: Box<dyn CanisterIdResolver<Body>>,
-    counter: AtomicUsize,
-    replicas: Vec<(Agent, String)>,
-    debug: bool,
-    fetch_root_key: bool,
-}
-
-struct ProcessArgs {
-    args: Arc<ProcessArgsInner>,
+pub struct Args {
+    args: Arc<ArgsInner>,
     current: usize,
 }
 
-impl Clone for ProcessArgs {
+impl Clone for Args {
     fn clone(&self) -> Self {
         let args = self.args.clone();
-        ProcessArgs {
+        Args {
             current: args.counter.fetch_add(1, Ordering::Relaxed) % args.replicas.len(),
             args,
         }
     }
 }
 
-impl From<ProcessArgsInner> for ProcessArgs {
-    fn from(args: ProcessArgsInner) -> Self {
-        ProcessArgs {
+impl From<ArgsInner> for Args {
+    fn from(args: ArgsInner) -> Self {
+        Args {
             args: Arc::new(args),
             current: 0,
         }
     }
 }
-impl ProcessArgs {
+impl Args {
     fn replica(&self) -> (&Agent, &str) {
         let v = &self.args.replicas[self.current];
         (&v.0, &v.1)
@@ -128,8 +85,8 @@ impl ProcessArgs {
 }
 
 #[instrument(level = "info", skip_all, fields(addr = display(addr), replica = args.replica().1))]
-async fn process_request(
-    Extension(args): Extension<ProcessArgs>,
+pub async fn handler(
+    Extension(args): Extension<Args>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request<Body>,
 ) -> Response<Body> {
@@ -409,188 +366,4 @@ async fn process_request_inner(
     }
 
     Ok(response)
-}
-
-struct ForwardArgs {
-    debug: bool,
-    proxy_url: Uri,
-    client: Client<HttpsConnector<HttpConnector>>,
-}
-
-#[instrument(level = "info", skip_all, fields(addr = display(addr)))]
-async fn forward_request(
-    Extension(args): Extension<Arc<ForwardArgs>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    request: Request<Body>,
-) -> Response<Body> {
-    handle_error(
-        args.debug,
-        async {
-            info!("forwarding");
-            let proxied_request =
-                create_proxied_request(&addr.ip(), args.proxy_url.clone(), request)?;
-            let response = args.client.request(proxied_request).await?;
-            Ok(response)
-        }
-        .await,
-    )
-}
-
-fn create_proxied_request<B>(
-    client_ip: &IpAddr,
-    proxy_url: Uri,
-    mut request: Request<B>,
-) -> Result<Request<B>, anyhow::Error> {
-    *request.headers_mut() = remove_hop_headers(request.headers());
-    *request.uri_mut() = forward_uri(proxy_url, &request)?;
-
-    let x_forwarded_for_header_name = "x-forwarded-for";
-
-    // Add forwarding information in the headers
-    match request.headers_mut().entry(x_forwarded_for_header_name) {
-        hyper::header::Entry::Vacant(entry) => {
-            entry.insert(client_ip.to_string().parse()?);
-        }
-
-        hyper::header::Entry::Occupied(mut entry) => {
-            let addr = format!("{}, {}", entry.get().to_str()?, client_ip);
-            entry.insert(addr.parse()?);
-        }
-    }
-
-    Ok(request)
-}
-
-fn is_hop_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("connection")
-        || name.eq_ignore_ascii_case("keep-alive")
-        || name.eq_ignore_ascii_case("proxy-authenticate")
-        || name.eq_ignore_ascii_case("proxy-authorization")
-        || name.eq_ignore_ascii_case("te")
-        || name.eq_ignore_ascii_case("trailers")
-        || name.eq_ignore_ascii_case("transfer-encoding")
-        || name.eq_ignore_ascii_case("upgrade")
-}
-
-/// Returns a clone of the headers without the [hop-by-hop headers].
-///
-/// [hop-by-hop headers]: http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
-fn remove_hop_headers(
-    headers: &hyper::header::HeaderMap<hyper::header::HeaderValue>,
-) -> hyper::header::HeaderMap<hyper::header::HeaderValue> {
-    let mut result = hyper::HeaderMap::new();
-    for (k, v) in headers.iter() {
-        if !is_hop_header(k.as_str()) {
-            result.insert(k.clone(), v.clone());
-        }
-    }
-    result
-}
-
-fn forward_uri<B>(proxy_url: Uri, req: &Request<B>) -> Result<Uri, anyhow::Error> {
-    let mut parts = Parts::from(proxy_url);
-    parts.path_and_query = req.uri().path_and_query().cloned();
-    Ok(Uri::from_parts(parts)?)
-}
-
-fn handle_error(debug: bool, v: Result<Response<Body>, anyhow::Error>) -> Response<Body> {
-    match v {
-        Err(err) => {
-            error!("Internal Error during request:\n{}", err);
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(if debug {
-                    format!("Internal Error: {:?}", err).into()
-                } else {
-                    "Internal Server Error".into()
-                })
-                .unwrap()
-        }
-        Ok(v) => v,
-    }
-}
-
-pub struct SetupArgs<V, R> {
-    pub validator: V,
-    pub resolver: R,
-    pub client: reqwest::Client,
-}
-
-pub fn setup(
-    args: SetupArgs<impl Validate + 'static, impl CanisterIdResolver<Body> + 'static>,
-    opts: Opts,
-) -> Result<Runner, anyhow::Error> {
-    let client = args.client;
-    let process_args = Extension(ProcessArgs::from(ProcessArgsInner {
-        validator: Box::new(args.validator),
-        resolver: Box::new(args.resolver),
-        counter: AtomicUsize::new(0),
-        replicas: opts
-            .replica
-            .into_iter()
-            .map(|replica_url| {
-                let transport = ReqwestHttpReplicaV2Transport::create_with_client(
-                    replica_url.clone(),
-                    client.clone(),
-                )
-                .context("failed to create transport")?
-                .with_max_response_body_size(RESPONSE_BODY_SIZE_LIMIT);
-
-                let agent = Agent::builder()
-                    .with_transport(transport)
-                    .build()
-                    .context("Could not create agent...")?;
-                Ok((agent, replica_url))
-            })
-            .collect::<Result<_, anyhow::Error>>()?,
-        debug: opts.debug,
-        fetch_root_key: opts.fetch_root_key,
-    }));
-
-    let router = Router::new();
-    let process_request = process_request.layer(process_args).into_service();
-
-    // Setup `/_/` proxy for dfx if requested
-    let router = if let Some(proxy_url) = opts.proxy {
-        info!("Setting up `/_/` proxy to `{proxy_url}`");
-        if proxy_url.scheme().is_none() {
-            bail!("No schema found on `proxy_url`");
-        }
-        let forward_args = Extension(Arc::new(ForwardArgs {
-            client: Client::builder().build(hyper_tls::HttpsConnector::new()),
-            proxy_url,
-            debug: opts.debug,
-        }));
-        let forward_request = any(forward_request.layer(forward_args));
-        router
-            // Exclude `/_/raw` from the proxy
-            .route("/_/raw", process_request.clone())
-            .route("/_/raw/*path", process_request.clone())
-            // Include everything else
-            .route("/_", forward_request.clone())
-            .route("/_/", forward_request.clone())
-            .route("/_/:not_raw", forward_request.clone())
-            .route("/_/:not_raw/*path", forward_request)
-    } else {
-        router
-    };
-
-    Ok(Runner {
-        router: add_trace_layer(router.fallback(process_request)),
-        address: opts.address,
-    })
-}
-
-pub struct Runner {
-    router: Router,
-    address: SocketAddr,
-}
-impl Runner {
-    pub fn run(self) -> impl Future<Output = Result<(), hyper::Error>> {
-        info!("Starting server. Listening on http://{}/", self.address);
-        axum::Server::bind(&self.address).serve(
-            self.router
-                .into_make_service_with_connect_info::<SocketAddr>(),
-        )
-    }
 }
