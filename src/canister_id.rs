@@ -1,7 +1,28 @@
+use anyhow::Context;
+use clap::Args;
 use hyper::{header::HOST, Request, Uri};
 use ic_agent::export::Principal;
+use tracing::error;
 
 use crate::config::dns_canister_config::DnsCanisterConfig;
+
+/// The options for the canister resolver
+#[derive(Args)]
+pub struct Opts {
+    /// A map of domain names to canister IDs.
+    /// Format: domain.name:canister-id
+    #[clap(long)]
+    dns_alias: Vec<String>,
+
+    /// A list of domain name suffixes.  If found, the next (to the left) subdomain
+    /// is used as the Principal, if it parses as a Principal.
+    #[clap(long, default_value = "localhost")]
+    dns_suffix: Vec<String>,
+
+    /// Whether or not to ignore `canisterId=` when locating the canister.
+    #[clap(long)]
+    ignore_url_canister_param: bool,
+}
 
 /// A resolver for `Principal`s from a `Uri`.
 trait UriResolver: Sync + Send {
@@ -13,7 +34,6 @@ impl<T: UriResolver> UriResolver for &T {
         T::resolve(self, uri)
     }
 }
-
 struct UriParameterResolver;
 
 impl UriResolver for UriParameterResolver {
@@ -83,6 +103,22 @@ impl<B> Resolver<B> for DefaultResolver {
         }
         None
     }
+}
+
+pub fn setup(opts: Opts) -> Result<DefaultResolver, anyhow::Error> {
+    let dns = DnsCanisterConfig::new(&opts.dns_alias, &opts.dns_suffix)
+        .context("Failed to configure canister resolver DNS");
+    let dns = match dns {
+        Err(e) => {
+            error!("{e}");
+            Err(e)
+        }
+        Ok(v) => Ok(v),
+    }?;
+    Ok(DefaultResolver {
+        dns,
+        check_params: !opts.ignore_url_canister_param,
+    })
 }
 
 #[cfg(test)]

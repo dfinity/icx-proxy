@@ -1,5 +1,6 @@
 use ic_utils::interfaces::http_request::HeaderField;
 use lazy_regex::regex_captures;
+use tracing::{trace, warn};
 
 const MAX_LOG_CERT_NAME_SIZE: usize = 100;
 const MAX_LOG_CERT_B64_SIZE: usize = 2000;
@@ -11,7 +12,7 @@ pub struct HeadersData {
     pub encoding: Option<String>,
 }
 
-pub fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> HeadersData {
+pub fn extract_headers_data(headers: &[HeaderField]) -> HeadersData {
     let mut headers_data = HeadersData {
         certificate: None,
         tree: None,
@@ -22,34 +23,27 @@ pub fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> H
         if name.eq_ignore_ascii_case("Ic-Certificate") {
             for field in value.split(',') {
                 if let Some((_, name, b64_value)) = regex_captures!("^(.*)=:(.*):$", field.trim()) {
-                    slog::trace!(
-                        logger,
+                    trace!(
                         ">> certificate {:.l1$}: {:.l2$}",
                         name,
                         b64_value,
                         l1 = MAX_LOG_CERT_NAME_SIZE,
                         l2 = MAX_LOG_CERT_B64_SIZE
                     );
-                    let bytes = decode_hash_tree(name, Some(b64_value.to_string()), logger);
+                    let bytes = decode_hash_tree(name, Some(b64_value.to_string()));
                     if name == "certificate" {
                         headers_data.certificate = Some(match (headers_data.certificate, bytes) {
                             (None, bytes) => bytes,
                             (Some(Ok(certificate)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate certificate field: {:?}", bytes);
+                                warn!("duplicate certificate field: {:?}", bytes);
                                 Ok(certificate)
                             }
                             (Some(Ok(certificate)), Err(_)) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
+                                warn!("duplicate certificate field (failed to decode)");
                                 Ok(certificate)
                             }
                             (Some(Err(_)), bytes) => {
-                                slog::warn!(
-                                    logger,
-                                    "duplicate certificate field (failed to decode)"
-                                );
+                                warn!("duplicate certificate field (failed to decode)");
                                 bytes
                             }
                         });
@@ -57,15 +51,15 @@ pub fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> H
                         headers_data.tree = Some(match (headers_data.tree, bytes) {
                             (None, bytes) => bytes,
                             (Some(Ok(tree)), Ok(bytes)) => {
-                                slog::warn!(logger, "duplicate tree field: {:?}", bytes);
+                                warn!("duplicate tree field: {:?}", bytes);
                                 Ok(tree)
                             }
                             (Some(Ok(tree)), Err(_)) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                warn!("duplicate tree field (failed to decode)");
                                 Ok(tree)
                             }
                             (Some(Err(_)), bytes) => {
-                                slog::warn!(logger, "duplicate tree field (failed to decode)");
+                                warn!("duplicate tree field (failed to decode)");
                                 bytes
                             }
                         });
@@ -81,14 +75,10 @@ pub fn extract_headers_data(headers: &[HeaderField], logger: &slog::Logger) -> H
     headers_data
 }
 
-fn decode_hash_tree(
-    name: &str,
-    value: Option<String>,
-    logger: &slog::Logger,
-) -> Result<Vec<u8>, ()> {
+fn decode_hash_tree(name: &str, value: Option<String>) -> Result<Vec<u8>, ()> {
     match value {
         Some(tree) => base64::decode(tree).map_err(|e| {
-            slog::warn!(logger, "Unable to decode {} from base64: {}", name, e);
+            warn!("Unable to decode {} from base64: {}", name, e);
         }),
         _ => Err(()),
     }
@@ -97,16 +87,14 @@ fn decode_hash_tree(
 #[cfg(test)]
 mod tests {
     use ic_utils::interfaces::http_request::HeaderField;
-    use slog::o;
 
     use super::{extract_headers_data, HeadersData};
 
     #[test]
     fn extract_headers_data_simple() {
-        let logger = slog::Logger::root(slog::Discard, o!());
         let headers: Vec<HeaderField> = vec![];
 
-        let out = extract_headers_data(&headers, &logger);
+        let out = extract_headers_data(&headers);
 
         assert_eq!(
             out,
@@ -120,10 +108,9 @@ mod tests {
 
     #[test]
     fn extract_headers_data_content_encoding() {
-        let logger = slog::Logger::root(slog::Discard, o!());
         let headers: Vec<HeaderField> = vec![HeaderField("Content-Encoding".into(), "test".into())];
 
-        let out = extract_headers_data(&headers, &logger);
+        let out = extract_headers_data(&headers);
 
         assert_eq!(
             out,
