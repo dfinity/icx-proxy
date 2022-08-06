@@ -305,11 +305,10 @@ async fn process_request_inner(
             )
             .call_and_wait(waiter)
             .await;
-        let http_response = match handle_result(update_result) {
+        match handle_result(update_result) {
             Ok(http_response) => http_response,
             Err(response_or_error) => return response_or_error,
-        };
-        http_response
+        }
     } else {
         http_response
     };
@@ -366,7 +365,7 @@ async fn process_request_inner(
         let body_valid = validator.validate(
             &headers_data,
             &canister_id,
-            &agent,
+            agent,
             &parts.uri,
             &http_response.body,
         );
@@ -562,7 +561,7 @@ pub fn setup(
             proxy_url,
             debug: opts.debug,
         }));
-        let forward_request = any(forward_request.layer(forward_args.clone()));
+        let forward_request = any(forward_request.layer(forward_args));
         router
             // Exclude `/_/raw` from the proxy
             .route("/_/raw", process_request.clone())
