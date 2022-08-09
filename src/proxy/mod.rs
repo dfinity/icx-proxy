@@ -52,11 +52,9 @@ pub struct Opts {
 }
 
 mod agent;
-
-use agent::{handler as agent_handler, Args as AgentArgs, ArgsInner as AgentArgsInner};
-
 mod forward;
 
+use agent::{handler as agent_handler, Args as AgentArgs, ArgsInner as AgentArgsInner};
 use forward::{handler as forward_handler, Args as ForwardArgs};
 
 fn handle_error(debug: bool, v: Result<Response<Body>, anyhow::Error>) -> Response<Body> {
