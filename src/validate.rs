@@ -187,10 +187,6 @@ fn validate_body(
 #[cfg(test)]
 mod tests {
     use ic_agent::{
-        agent::http_transport::{
-            hyper::{Body, Uri},
-            HyperReplicaV2Transport,
-        },
         ic_types::Principal,
         Agent,
     };
@@ -198,6 +194,10 @@ mod tests {
     use crate::{
         headers::HeadersData,
         validate::{Validate, Validator},
+    };
+    use crate::http_transport::{
+        hyper::{Body, Uri},
+        HyperReplicaV2Transport,
     };
 
     #[test]

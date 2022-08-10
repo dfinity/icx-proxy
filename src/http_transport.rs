@@ -87,6 +87,7 @@ where
 
 impl<B1: HyperBody> HyperReplicaV2Transport<B1> {
     /// Creates a replica transport from a HTTP URL.
+    #[allow(dead_code)]
     pub fn create<U: Into<Uri>>(url: U) -> Result<Self, AgentError> {
         let connector = HttpsConnectorBuilder::new()
             .with_webpki_roots()
@@ -146,7 +147,7 @@ where
 
         Ok(Self {
             _marker: PhantomData,
-            url: url,
+            url,
             service,
             max_response_body_size: None,
         })
