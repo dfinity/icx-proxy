@@ -4,14 +4,14 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use anyhow::bail;
 use axum::{extract::ConnectInfo, Extension};
 use futures::StreamExt;
 use http_body::{LengthLimitError, Limited};
-use hyper::{body, http::header::CONTENT_TYPE, Body, Request, Response, StatusCode};
-use ic_agent::{agent_error::HttpErrorPayload, Agent, AgentError};
+use ic_agent::{agent_error::HttpErrorPayload, Agent, AgentError, agent::http_transport::hyper::{body, http::header::CONTENT_TYPE, Body, Request, Response, StatusCode, Uri}};
 use ic_utils::{
     call::{AsyncCall, SyncCall},
     interfaces::http_request::{
@@ -24,7 +24,7 @@ use tracing::{enabled, instrument, trace, warn, Level};
 use crate::{
     canister_id::Resolver as CanisterIdResolver,
     headers::extract_headers_data,
-    proxy::{handle_error, REQUEST_BODY_SIZE_LIMIT},
+    proxy::{HandleError, REQUEST_BODY_SIZE_LIMIT},
     validate::Validate,
 };
 
@@ -47,9 +47,9 @@ impl ReplicaErrorCodes {
 
 pub struct ArgsInner {
     pub validator: Box<dyn Validate>,
-    pub resolver: Box<dyn CanisterIdResolver<Body>>,
+    pub resolver: Box<dyn CanisterIdResolver>,
     pub counter: AtomicUsize,
-    pub replicas: Vec<(Agent, String)>,
+    pub replicas: Vec<(Agent, Uri)>,
     pub debug: bool,
     pub fetch_root_key: bool,
 }
@@ -78,13 +78,13 @@ impl From<ArgsInner> for Args {
     }
 }
 impl Args {
-    fn replica(&self) -> (&Agent, &str) {
+    fn replica(&self) -> (&Agent, &Uri) {
         let v = &self.args.replicas[self.current];
         (&v.0, &v.1)
     }
 }
 
-#[instrument(level = "info", skip_all, fields(addr = display(addr), replica = args.replica().1))]
+#[instrument(level = "info", skip_all, fields(addr = display(addr), replica = display(args.replica().1)))]
 pub async fn handler(
     Extension(args): Extension<Args>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -92,23 +92,21 @@ pub async fn handler(
 ) -> Response<Body> {
     let agent = args.replica().0;
     let args = &args.args;
-    handle_error(
-        args.debug,
-        async {
-            if args.fetch_root_key && agent.fetch_root_key().await.is_err() {
-                unable_to_fetch_root_key()
-            } else {
-                process_request_inner(
-                    request,
-                    agent,
-                    args.resolver.as_ref(),
-                    args.validator.as_ref(),
-                )
-                .await
-            }
+    async {
+        if args.fetch_root_key && agent.fetch_root_key().await.is_err() {
+            unable_to_fetch_root_key()
+        } else {
+            process_request_inner(
+                request,
+                agent,
+                args.resolver.as_ref(),
+                args.validator.as_ref(),
+            )
+            .await
         }
-        .await,
-    )
+    }
+    .await
+    .handle_error(args.debug)
 }
 
 fn unable_to_fetch_root_key() -> Result<Response<Body>, anyhow::Error> {
@@ -120,10 +118,12 @@ fn unable_to_fetch_root_key() -> Result<Response<Body>, anyhow::Error> {
 async fn process_request_inner(
     request: Request<Body>,
     agent: &Agent,
-    resolver: &dyn CanisterIdResolver<Body>,
+    resolver: &dyn CanisterIdResolver,
     validator: &dyn Validate,
 ) -> Result<Response<Body>, anyhow::Error> {
-    let canister_id = match resolver.resolve(&request) {
+    let (parts, body) = request.into_parts();
+
+    let canister_id = match resolver.resolve(&parts) {
         None => {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
@@ -133,14 +133,8 @@ async fn process_request_inner(
         Some(x) => x,
     };
 
-    trace!(
-        "<< {} {} {:?}",
-        request.method(),
-        request.uri(),
-        &request.version()
-    );
+    trace!("<< {} {} {:?}", parts.method, parts.uri, parts.version);
 
-    let (parts, body) = request.into_parts();
     let method = parts.method;
     let uri = parts.uri.to_string();
     let headers = parts
@@ -159,7 +153,7 @@ async fn process_request_inner(
 
     // Limit request body size
     let body = Limited::new(body, REQUEST_BODY_SIZE_LIMIT);
-    let entire_body = match hyper::body::to_bytes(body).await {
+    let entire_body = match body::to_bytes(body).await {
         Ok(data) => data,
         Err(err) => {
             if err.downcast_ref::<LengthLimitError>().is_some() {
@@ -250,8 +244,8 @@ async fn process_request_inner(
 
     let http_response = if http_response.upgrade == Some(true) {
         let waiter = garcon::Delay::builder()
-            .throttle(std::time::Duration::from_millis(500))
-            .timeout(std::time::Duration::from_secs(15))
+            .throttle(Duration::from_millis(500))
+            .timeout(Duration::from_secs(15))
             .build();
         let update_result = canister
             .http_request_update_custom(

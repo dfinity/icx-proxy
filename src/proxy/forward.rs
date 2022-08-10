@@ -1,38 +1,68 @@
 use std::{
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use axum::{extract::ConnectInfo, Extension};
-use hyper::{client::HttpConnector, http::uri::Parts, Body, Client, Request, Response, Uri};
-use hyper_tls::HttpsConnector;
+use ic_agent::agent::http_transport::hyper::{HeaderMap, header::{Entry, HeaderValue}, http::uri::Parts, Request, Response, Uri};
 use tracing::{info, instrument};
 
-use crate::proxy::handle_error;
+use crate::{http_client::{Body, HyperService}, proxy::HandleError};
 
-pub struct Args {
+pub struct ArgsInner<C> {
     pub debug: bool,
-    pub proxy_url: Uri,
-    pub client: Client<HttpsConnector<HttpConnector>>,
+    pub counter: AtomicUsize,
+    pub proxy_urls: Vec<Uri>,
+    pub client: C,
+}
+pub struct Args<C> {
+    args: Arc<ArgsInner<C>>,
+    current: usize,
+}
+impl<C> From<ArgsInner<C>> for Args<C> {
+    fn from(args: ArgsInner<C>) -> Self {
+        Args {
+            args: Arc::new(args),
+            current: 0,
+        }
+    }
+}
+impl<C> Clone for Args<C> {
+    fn clone(&self) -> Self {
+        let args = self.args.clone();
+        Args {
+            current: args.counter.fetch_add(1, Ordering::Relaxed) % args.proxy_urls.len(),
+            args,
+        }
+    }
+}
+impl<C> Args<C> {
+    fn proxy_url(&self) -> &Uri {
+        &self.args.proxy_urls[self.current]
+    }
 }
 
 #[instrument(level = "info", skip_all, fields(addr = display(addr)))]
-pub async fn handler(
-    Extension(args): Extension<Arc<Args>>,
+pub async fn handler<C: HyperService<Body>>(
+    Extension(args): Extension<Arc<Args<C>>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request<Body>,
 ) -> Response<Body> {
-    handle_error(
-        args.debug,
-        async {
-            info!("forwarding");
-            let proxied_request =
-                create_proxied_request(&addr.ip(), args.proxy_url.clone(), request)?;
-            let response = args.client.request(proxied_request).await?;
-            Ok(response)
-        }
-        .await,
-    )
+    let proxy_url = args.proxy_url();
+    let args = &args.args;
+
+    async {
+        info!("forwarding");
+        let proxied_request = create_proxied_request(&addr.ip(), proxy_url.clone(), request)?;
+        let response = args.client.clone().call(proxied_request).await?;
+        Ok(response)
+    }
+    .await
+    .handle_error(args.debug)
+    .map(|b| b.into())
 }
 
 fn create_proxied_request<B>(
@@ -47,11 +77,11 @@ fn create_proxied_request<B>(
 
     // Add forwarding information in the headers
     match request.headers_mut().entry(x_forwarded_for_header_name) {
-        hyper::header::Entry::Vacant(entry) => {
+        Entry::Vacant(entry) => {
             entry.insert(client_ip.to_string().parse()?);
         }
 
-        hyper::header::Entry::Occupied(mut entry) => {
+        Entry::Occupied(mut entry) => {
             let addr = format!("{}, {}", entry.get().to_str()?, client_ip);
             entry.insert(addr.parse()?);
         }
@@ -75,9 +105,9 @@ fn is_hop_header(name: &str) -> bool {
 ///
 /// [hop-by-hop headers]: http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
 fn remove_hop_headers(
-    headers: &hyper::header::HeaderMap<hyper::header::HeaderValue>,
-) -> hyper::header::HeaderMap<hyper::header::HeaderValue> {
-    let mut result = hyper::HeaderMap::new();
+    headers: &HeaderMap<HeaderValue>,
+) -> HeaderMap<HeaderValue> {
+    let mut result = HeaderMap::new();
     for (k, v) in headers.iter() {
         if !is_hop_header(k.as_str()) {
             result.insert(k.clone(), v.clone());

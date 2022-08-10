@@ -3,17 +3,21 @@ use std::{future::Future, net::SocketAddr};
 use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::Args;
 use futures::{future::OptionFuture, FutureExt};
-use hyper::{Body, Request, Response, StatusCode};
 use opentelemetry::{
     global,
     metrics::{Counter, Meter},
     sdk::Resource,
     KeyValue,
 };
+use ic_agent::{
+    ic_types::Principal,
+    Agent,
+    agent::http_transport::hyper::{self, Uri, Body, Request, Response, StatusCode}
+};
 use opentelemetry_prometheus::PrometheusExporter;
 use prometheus::{Encoder, TextEncoder};
 
-use crate::{logging::add_trace_layer, validate::Validate};
+use crate::{headers::HeadersData, logging::add_trace_layer, validate::Validate};
 
 /// The options for metrics
 #[derive(Args)]
@@ -44,10 +48,10 @@ impl MetricParams {
 impl<T: Validate> Validate for WithMetrics<T> {
     fn validate(
         &self,
-        headers_data: &crate::headers::HeadersData,
-        canister_id: &candid::Principal,
-        agent: &ic_agent::Agent,
-        uri: &hyper::Uri,
+        headers_data: &HeadersData,
+        canister_id: &Principal,
+        agent: &Agent,
+        uri: &Uri,
         response_body: &[u8],
     ) -> Result<(), String> {
         let out = self

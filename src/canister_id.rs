@@ -1,7 +1,9 @@
 use anyhow::Context;
 use clap::Args;
-use hyper::{header::HOST, Request, Uri};
-use ic_agent::export::Principal;
+use ic_agent::{
+    export::Principal,
+    agent::http_transport::hyper::{header::HOST, Uri, http::request::Parts}
+};
 use tracing::error;
 
 use crate::config::dns_canister_config::DnsCanisterConfig;
@@ -38,7 +40,7 @@ struct UriParameterResolver;
 
 impl UriResolver for UriParameterResolver {
     fn resolve(&self, uri: &Uri) -> Option<Principal> {
-        url::form_urlencoded::parse(uri.query()?.as_bytes())
+        form_urlencoded::parse(uri.query()?.as_bytes())
             .find(|(name, _)| name == "canisterId")
             .and_then(|(_, canister_id)| Principal::from_text(canister_id.as_ref()).ok())
     }
@@ -51,31 +53,31 @@ impl UriResolver for DnsCanisterConfig {
 }
 
 /// A resolver for `Principal`s from a `Request`.
-pub trait Resolver<B>: Sync + Send {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal>;
+pub trait Resolver: Sync + Send {
+    fn resolve(&self, request: &Parts) -> Option<Principal>;
 }
 
-impl<B, T: Resolver<B>> Resolver<B> for &T {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
+impl<T: Resolver> Resolver for &T {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
         T::resolve(self, request)
     }
 }
 
 struct RequestUriResolver<T>(pub T);
 
-impl<B, T: UriResolver> Resolver<B> for RequestUriResolver<T> {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
-        self.0.resolve(request.uri())
+impl<T: UriResolver> Resolver for RequestUriResolver<T> {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
+        self.0.resolve(&request.uri)
     }
 }
 
 struct RequestHostResolver<T>(pub T);
 
-impl<B, T: UriResolver> Resolver<B> for RequestHostResolver<T> {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
+impl<T: UriResolver> Resolver for RequestHostResolver<T> {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
         self.0.resolve(
             &Uri::builder()
-                .authority(request.headers().get(HOST)?.as_bytes())
+                .authority(request.headers.get(HOST)?.as_bytes())
                 .build()
                 .ok()?,
         )
@@ -88,8 +90,8 @@ pub struct DefaultResolver {
     pub check_params: bool,
 }
 
-impl<B> Resolver<B> for DefaultResolver {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
+impl Resolver for DefaultResolver {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
         if let Some(v) = RequestHostResolver(&self.dns).resolve(request) {
             return Some(v);
         }
@@ -123,8 +125,10 @@ pub fn setup(opts: Opts) -> Result<DefaultResolver, anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
-    use hyper::{header::HOST, Request};
-    use ic_agent::export::Principal;
+    use ic_agent::{
+        export::Principal,
+        agent::http_transport::hyper::{Request, header::HOST, http::request::Parts}
+    };
 
     use super::{DefaultResolver, Resolver};
     use crate::config::dns_canister_config::DnsCanisterConfig;
@@ -265,7 +269,7 @@ mod tests {
         DnsCanisterConfig::new(&aliases, &suffixes).unwrap()
     }
 
-    fn build_req(host: Option<&str>, uri: &str) -> Request<()> {
+    fn build_req(host: Option<&str>, uri: &str) -> Parts {
         let req = Request::builder().uri(uri);
         if let Some(host) = host {
             req.header(HOST, host)
@@ -274,6 +278,8 @@ mod tests {
         }
         .body(())
         .unwrap()
+        .into_parts()
+        .0
     }
 
     fn principal(v: &str) -> Principal {

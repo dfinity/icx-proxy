@@ -1,6 +1,10 @@
 use std::{
+    collections::HashMap,
+    borrow::Cow, 
     fs::File,
+    hash::{Hash, Hasher},
     io::{Cursor, Read},
+    iter,
     net::SocketAddr,
     path::PathBuf,
     str::FromStr,
@@ -9,9 +13,21 @@ use std::{
 
 use anyhow::Context;
 use clap::Args;
+use hyper_rustls::HttpsConnectorBuilder;
+use ic_agent::agent::http_transport::{self, hyper::{
+    self,
+    body::Bytes,
+    client::{
+        connect::dns::{GaiResolver, Name},
+        HttpConnector,
+    },
+    service::Service,
+    Client,
+}};
+use itertools::Either;
 use tracing::error;
 
-/// Resolve overrides for [`reqwest::ClientBuilder::resolve()`]
+/// DNS resolve overrides
 /// `ic0.app=[::1]:9090`
 struct OptResolve {
     domain: String,
@@ -52,14 +68,51 @@ pub struct Opts {
     replica_resolve: Vec<OptResolve>,
 }
 
-pub fn setup(opts: Opts) -> Result<reqwest::Client, anyhow::Error> {
+pub type Body = hyper::Body;
+
+pub trait HyperBody: http_transport::HyperBody + From<&'static [u8]>
++ From<&'static str>
++ From<Bytes>
++ From<Cow<'static, [u8]>>
++ From<Cow<'static, str>>
++ From<String>
++ From<Body>
++ Into<Body> {}
+
+impl<B> HyperBody for B
+where B: http_transport::HyperBody + From<&'static [u8]>
++ From<&'static str>
++ From<Bytes>
++ From<Cow<'static, [u8]>>
++ From<Cow<'static, str>>
++ From<String>
++ From<Body>
++ Into<Body> {}
+
+/// Trait representing the contraints on [`Service`] that [`HyperReplicaV2Transport`] requires.
+pub trait HyperService<B1: HyperBody>: http_transport::HyperService<B1, ResponseBody = Self::ResponseBody2>
+{
+    /// Values yielded in the `Body` of the `Response`.
+    type ResponseBody2: HyperBody;
+}
+
+impl<B1, B2, S> HyperService<B1> for S
+where
+    B1: HyperBody,
+    B2: HyperBody,
+    S: http_transport::HyperService<B1, ResponseBody = B2>,
+{
+    type ResponseBody2 = B2;
+}
+
+pub fn setup(opts: Opts) -> Result<impl HyperService<Body>, anyhow::Error> {
     let Opts {
         danger_accept_invalid_ssl,
         ssl_root_certificate,
         replica_resolve,
     } = opts;
     let builder = rustls::ClientConfig::builder().with_safe_defaults();
-    let mut tls_config = if !danger_accept_invalid_ssl {
+    let tls_config = if !danger_accept_invalid_ssl {
         use rustls::{Certificate, RootCertStore};
 
         let mut root_cert_store = RootCertStore::empty();
@@ -172,20 +225,51 @@ pub fn setup(opts: Opts) -> Result<reqwest::Client, anyhow::Error> {
     };
 
     // Advertise support for HTTP/2
-    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    //tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
-    let builder = reqwest::Client::builder().use_preconfigured_tls(tls_config);
-
-    // Setup DNS
-    let builder = replica_resolve
-        .into_iter()
-        .fold(builder, |builder, OptResolve { domain, addr }| {
-            builder.resolve(&domain, addr)
-        });
-
-    let v = builder.build().context("Could not create HTTP client.");
-    if let Err(e) = v.as_ref() {
-        error!("{}", e)
+    #[derive(Debug, Eq)]
+    struct Uncased(Name);
+    impl PartialEq<Uncased> for Uncased {
+        fn eq(&self, v: &Uncased) -> bool {
+            self.0.as_str().eq_ignore_ascii_case(v.0.as_str())
+        }
     }
-    v
+    impl Hash for Uncased {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.as_str().len().hash(state);
+            for b in self.0.as_str().as_bytes() {
+                state.write_u8(b.to_ascii_lowercase());
+            }
+        }
+    }
+
+    let mapped = replica_resolve
+        .into_iter()
+        .map(|v| Ok((Uncased(Name::from_str(&v.domain)?), v.addr)))
+        .collect::<Result<HashMap<_, _>, anyhow::Error>>()
+        .context("Invalid domain in `replica-resolve` flag");
+    // TODO: inspect_err
+    let _ = mapped.as_ref().map_err(|e| error!("{}", e));
+    let mapped = Arc::new(mapped?);
+    let resolver = tower::service_fn(move |name: Name| {
+        let mapped = mapped.clone();
+        async move {
+            let name = Uncased(name);
+            if let Some(v) = mapped.get(&name) {
+                Ok(Either::Left(iter::once(*v)))
+            } else {
+                GaiResolver::new().call(name.0).await.map(Either::Right)
+            }
+        }
+    });
+    let mut connector = HttpConnector::new_with_resolver(resolver);
+    connector.enforce_http(false);
+    let connector = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(connector);
+    let client: Client<_, Body> = Client::builder().build(connector);
+    Ok(client)
 }

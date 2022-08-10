@@ -1,10 +1,10 @@
 use std::io::Read;
 
-use candid::Principal;
 use flate2::read::{DeflateDecoder, GzDecoder};
-use hyper::Uri;
 use ic_agent::{
+    ic_types::Principal,
     hash_tree::LookupResult, ic_types::HashTree, lookup_value, Agent, AgentError, Certificate,
+    agent::http_transport::hyper::Uri,
 };
 use sha2::{Digest, Sha256};
 use tracing::trace;
@@ -186,11 +186,7 @@ fn validate_body(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use candid::Principal;
-    use hyper::Uri;
-    use ic_agent::{agent::http_transport::ReqwestHttpReplicaV2Transport, Agent};
+    use ic_agent::{agent::http_transport::{HyperReplicaV2Transport, hyper::{Uri, Body}}, Agent, ic_types::Principal};
 
     use crate::{
         headers::HeadersData,
@@ -206,9 +202,9 @@ mod tests {
         };
 
         let canister_id = Principal::from_text("wwc2m-2qaaa-aaaac-qaaaa-cai").unwrap();
-        let transport = ReqwestHttpReplicaV2Transport::create("http://www.example.com").unwrap();
+        let uri = Uri::from_static("http://www.example.com");
+        let transport = HyperReplicaV2Transport::<Body>::create(uri.clone()).unwrap();
         let agent = Agent::builder().with_transport(transport).build().unwrap();
-        let uri = Uri::from_str("http://www.example.com").unwrap();
         let body = vec![];
 
         let validator = Validator::new();

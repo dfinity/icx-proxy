@@ -1,6 +1,8 @@
-use crate::config::dns_canister_rule::DnsCanisterRule;
-use ic_agent::ic_types::Principal;
 use std::cmp::Reverse;
+
+use ic_agent::ic_types::Principal;
+
+use crate::config::dns_canister_rule::DnsCanisterRule;
 
 /// Configuration for determination of Domain Name to Principal
 #[derive(Clone, Debug)]
