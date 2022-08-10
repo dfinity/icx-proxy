@@ -1,9 +1,7 @@
+use crate::http_transport::hyper::{header::HOST, http::request::Parts, Uri};
 use anyhow::Context;
 use clap::Args;
-use ic_agent::{
-    export::Principal,
-    agent::http_transport::hyper::{header::HOST, Uri, http::request::Parts}
-};
+use ic_agent::export::Principal;
 use tracing::error;
 
 use crate::config::dns_canister_config::DnsCanisterConfig;
@@ -125,13 +123,11 @@ pub fn setup(opts: Opts) -> Result<DefaultResolver, anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
-    use ic_agent::{
-        export::Principal,
-        agent::http_transport::hyper::{Request, header::HOST, http::request::Parts}
-    };
+    use ic_agent::export::Principal;
 
     use super::{DefaultResolver, Resolver};
     use crate::config::dns_canister_config::DnsCanisterConfig;
+    use crate::http_transport::hyper::{header::HOST, http::request::Parts, Request};
 
     #[test]
     fn simple_resolve() {

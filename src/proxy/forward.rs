@@ -7,10 +7,17 @@ use std::{
 };
 
 use axum::{extract::ConnectInfo, Extension};
-use ic_agent::agent::http_transport::hyper::{HeaderMap, header::{Entry, HeaderValue}, http::uri::Parts, Request, Response, Uri};
 use tracing::{info, instrument};
 
-use crate::{http_client::{Body, HyperService}, proxy::HandleError};
+use crate::http_transport::hyper::{
+    header::{Entry, HeaderValue},
+    http::uri::Parts,
+    HeaderMap, Request, Response, Uri,
+};
+use crate::{
+    http_client::{Body, HyperService},
+    proxy::HandleError,
+};
 
 pub struct ArgsInner<C> {
     pub debug: bool,
@@ -104,9 +111,7 @@ fn is_hop_header(name: &str) -> bool {
 /// Returns a clone of the headers without the [hop-by-hop headers].
 ///
 /// [hop-by-hop headers]: http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
-fn remove_hop_headers(
-    headers: &HeaderMap<HeaderValue>,
-) -> HeaderMap<HeaderValue> {
+fn remove_hop_headers(headers: &HeaderMap<HeaderValue>) -> HeaderMap<HeaderValue> {
     let mut result = HeaderMap::new();
     for (k, v) in headers.iter() {
         if !is_hop_header(k.as_str()) {

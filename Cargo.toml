@@ -28,10 +28,11 @@ futures = "0.3"
 garcon = { version = "0.2", features = ["async"] }
 hex = "0.4"
 http-body = "0.4"
-hyper-rustls = { version = "0.23", features = [ "webpki-roots" ] }
+hyper = { version = "0.14.11", features = ["client", "http2", "http1"] }
+hyper-rustls = { version = "0.23", features = [ "webpki-roots", "http2" ] }
 itertools = "0.10"
-ic-agent = { version = "0.20", path = "../agent-rs/ic-agent", default-features = false, features = ["hyper"] }
-ic-utils = { version = "0.20", features = ["raw"], path = "../agent-rs/ic-utils" }
+ic-agent = { version = "0.20", default-features = false }
+ic-utils = { version = "0.20", features = ["raw"] }
 lazy-regex = "2"
 opentelemetry = "0.17"
 opentelemetry-prometheus = "0.10"

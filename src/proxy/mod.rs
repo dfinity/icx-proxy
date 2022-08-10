@@ -7,14 +7,17 @@ use std::{
 use anyhow::{bail, Context};
 use axum::{handler::Handler, routing::any, Extension, Router};
 use clap::Args;
-use ic_agent::{
-    agent::http_transport::{HyperReplicaV2Transport, hyper::{self, Response, StatusCode, Uri}},
-    Agent,
-};
+use ic_agent::Agent;
 use tracing::{error, info};
 
+use crate::http_transport::{
+    hyper::{self, Response, StatusCode, Uri},
+    HyperReplicaV2Transport,
+};
 use crate::{
-    canister_id::Resolver as CanisterIdResolver, http_client::{Body, HyperService}, logging::add_trace_layer,
+    canister_id::Resolver as CanisterIdResolver,
+    http_client::{Body, HyperService},
+    logging::add_trace_layer,
     validate::Validate,
 };
 
@@ -62,7 +65,10 @@ trait HandleError {
     fn handle_error(self, debug: bool) -> Response<Self::B>;
 }
 impl<B> HandleError for Result<Response<B>, anyhow::Error>
-where String: Into<B>, &'static str: Into<B> {
+where
+    String: Into<B>,
+    &'static str: Into<B>,
+{
     type B = B;
     fn handle_error(self, debug: bool) -> Response<B> {
         match self {

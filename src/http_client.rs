@@ -1,6 +1,6 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
-    borrow::Cow, 
     fs::File,
     hash::{Hash, Hasher},
     io::{Cursor, Read},
@@ -14,18 +14,22 @@ use std::{
 use anyhow::Context;
 use clap::Args;
 use hyper_rustls::HttpsConnectorBuilder;
-use ic_agent::agent::http_transport::{self, hyper::{
-    self,
-    body::Bytes,
-    client::{
-        connect::dns::{GaiResolver, Name},
-        HttpConnector,
-    },
-    service::Service,
-    Client,
-}};
 use itertools::Either;
 use tracing::error;
+
+use crate::http_transport::{
+    self,
+    hyper::{
+        self,
+        body::Bytes,
+        client::{
+            connect::dns::{GaiResolver, Name},
+            HttpConnector,
+        },
+        service::Service,
+        Client,
+    },
+};
 
 /// DNS resolve overrides
 /// `ic0.app=[::1]:9090`
@@ -70,27 +74,35 @@ pub struct Opts {
 
 pub type Body = hyper::Body;
 
-pub trait HyperBody: http_transport::HyperBody + From<&'static [u8]>
-+ From<&'static str>
-+ From<Bytes>
-+ From<Cow<'static, [u8]>>
-+ From<Cow<'static, str>>
-+ From<String>
-+ From<Body>
-+ Into<Body> {}
+pub trait HyperBody:
+    http_transport::HyperBody
+    + From<&'static [u8]>
+    + From<&'static str>
+    + From<Bytes>
+    + From<Cow<'static, [u8]>>
+    + From<Cow<'static, str>>
+    + From<String>
+    + From<Body>
+    + Into<Body>
+{
+}
 
-impl<B> HyperBody for B
-where B: http_transport::HyperBody + From<&'static [u8]>
-+ From<&'static str>
-+ From<Bytes>
-+ From<Cow<'static, [u8]>>
-+ From<Cow<'static, str>>
-+ From<String>
-+ From<Body>
-+ Into<Body> {}
+impl<B> HyperBody for B where
+    B: http_transport::HyperBody
+        + From<&'static [u8]>
+        + From<&'static str>
+        + From<Bytes>
+        + From<Cow<'static, [u8]>>
+        + From<Cow<'static, str>>
+        + From<String>
+        + From<Body>
+        + Into<Body>
+{
+}
 
 /// Trait representing the contraints on [`Service`] that [`HyperReplicaV2Transport`] requires.
-pub trait HyperService<B1: HyperBody>: http_transport::HyperService<B1, ResponseBody = Self::ResponseBody2>
+pub trait HyperService<B1: HyperBody>:
+    http_transport::HyperService<B1, ResponseBody = Self::ResponseBody2>
 {
     /// Values yielded in the `Body` of the `Response`.
     type ResponseBody2: HyperBody;

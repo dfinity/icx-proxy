@@ -2,14 +2,14 @@ use std::io::Read;
 
 use flate2::read::{DeflateDecoder, GzDecoder};
 use ic_agent::{
-    ic_types::Principal,
-    hash_tree::LookupResult, ic_types::HashTree, lookup_value, Agent, AgentError, Certificate,
-    agent::http_transport::hyper::Uri,
+    hash_tree::LookupResult, ic_types::HashTree, ic_types::Principal, lookup_value, Agent,
+    AgentError, Certificate,
 };
 use sha2::{Digest, Sha256};
 use tracing::trace;
 
 use crate::headers::HeadersData;
+use crate::http_transport::hyper::Uri;
 
 // The limit of a buffer we should decompress ~10mb.
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
@@ -186,7 +186,14 @@ fn validate_body(
 
 #[cfg(test)]
 mod tests {
-    use ic_agent::{agent::http_transport::{HyperReplicaV2Transport, hyper::{Uri, Body}}, Agent, ic_types::Principal};
+    use ic_agent::{
+        agent::http_transport::{
+            hyper::{Body, Uri},
+            HyperReplicaV2Transport,
+        },
+        ic_types::Principal,
+        Agent,
+    };
 
     use crate::{
         headers::HeadersData,

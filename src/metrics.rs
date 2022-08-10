@@ -3,20 +3,17 @@ use std::{future::Future, net::SocketAddr};
 use axum::{handler::Handler, routing::get, Extension, Router};
 use clap::Args;
 use futures::{future::OptionFuture, FutureExt};
+use ic_agent::{ic_types::Principal, Agent};
 use opentelemetry::{
     global,
     metrics::{Counter, Meter},
     sdk::Resource,
     KeyValue,
 };
-use ic_agent::{
-    ic_types::Principal,
-    Agent,
-    agent::http_transport::hyper::{self, Uri, Body, Request, Response, StatusCode}
-};
 use opentelemetry_prometheus::PrometheusExporter;
 use prometheus::{Encoder, TextEncoder};
 
+use crate::http_transport::hyper::{self, Body, Request, Response, StatusCode, Uri};
 use crate::{headers::HeadersData, logging::add_trace_layer, validate::Validate};
 
 /// The options for metrics
