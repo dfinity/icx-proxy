@@ -1,14 +1,15 @@
 use std::io::Read;
 
-use candid::Principal;
 use flate2::read::{DeflateDecoder, GzDecoder};
-use hyper::Uri;
 use ic_agent::{
-    hash_tree::LookupResult, ic_types::HashTree, lookup_value, Agent, AgentError, Certificate,
+    hash_tree::LookupResult, ic_types::HashTree, ic_types::Principal, lookup_value, Agent,
+    AgentError, Certificate,
 };
 use sha2::{Digest, Sha256};
+use tracing::trace;
 
-use crate::HeadersData;
+use crate::headers::HeadersData;
+use crate::http_transport::hyper::Uri;
 
 // The limit of a buffer we should decompress ~10mb.
 const MAX_CHUNK_SIZE_TO_DECOMPRESS: usize = 1024;
@@ -22,7 +23,6 @@ pub trait Validate: Sync + Send {
         agent: &Agent,
         uri: &Uri,
         response_body: &[u8],
-        logger: slog::Logger,
     ) -> Result<(), String>;
 }
 
@@ -42,7 +42,6 @@ impl Validate for Validator {
         agent: &Agent,
         uri: &Uri,
         response_body: &[u8],
-        logger: slog::Logger,
     ) -> Result<(), String> {
         let body_sha = if let Some(body_sha) =
             decode_body_to_sha256(response_body, headers_data.encoding.clone())
@@ -62,7 +61,6 @@ impl Validate for Validator {
                 agent,
                 uri,
                 &body_sha,
-                logger.clone(),
             ) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err("Body does not pass verification".to_string()),
@@ -130,7 +128,6 @@ fn validate_body(
     agent: &Agent,
     uri: &Uri,
     body_sha: &[u8; 32],
-    logger: slog::Logger,
 ) -> anyhow::Result<bool> {
     let cert: Certificate =
         serde_cbor::from_slice(certificates.certificate).map_err(AgentError::InvalidCborData)?;
@@ -138,7 +135,7 @@ fn validate_body(
         serde_cbor::from_slice(certificates.tree).map_err(AgentError::InvalidCborData)?;
 
     if let Err(e) = agent.verify(&cert, *canister_id, false) {
-        slog::trace!(logger, ">> certificate failed verification: {}", e);
+        trace!(">> certificate failed verification: {}", e);
         return Ok(false);
     }
 
@@ -150,8 +147,7 @@ fn validate_body(
     let witness = match lookup_value(&cert, certified_data_path) {
         Ok(witness) => witness,
         Err(e) => {
-            slog::trace!(
-                logger,
+            trace!(
                 ">> Could not find certified data for this canister in the certificate: {}",
                 e
             );
@@ -161,8 +157,7 @@ fn validate_body(
     let digest = tree.digest();
 
     if witness != digest {
-        slog::trace!(
-            logger,
+        trace!(
             ">> witness ({}) did not match digest ({})",
             hex::encode(witness),
             hex::encode(digest)
@@ -177,8 +172,7 @@ fn validate_body(
         _ => match tree.lookup_path(&["http_assets".into(), "/index.html".into()]) {
             LookupResult::Found(v) => v,
             _ => {
-                slog::trace!(
-                    logger,
+                trace!(
                     ">> Invalid Tree in the header. Does not contain path {:?}",
                     path
                 );
@@ -192,13 +186,12 @@ fn validate_body(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use ic_agent::{ic_types::Principal, Agent};
 
-    use candid::Principal;
-    use hyper::Uri;
-    use ic_agent::{agent::http_transport::ReqwestHttpReplicaV2Transport, Agent};
-    use slog::o;
-
+    use crate::http_transport::{
+        hyper::{Body, Uri},
+        HyperReplicaV2Transport,
+    };
     use crate::{
         headers::HeadersData,
         validate::{Validate, Validator},
@@ -213,15 +206,14 @@ mod tests {
         };
 
         let canister_id = Principal::from_text("wwc2m-2qaaa-aaaac-qaaaa-cai").unwrap();
-        let transport = ReqwestHttpReplicaV2Transport::create("http://www.example.com").unwrap();
+        let uri = Uri::from_static("http://www.example.com");
+        let transport = HyperReplicaV2Transport::<Body>::create(uri.clone()).unwrap();
         let agent = Agent::builder().with_transport(transport).build().unwrap();
-        let uri = Uri::from_str("http://www.example.com").unwrap();
         let body = vec![];
-        let logger = slog::Logger::root(slog::Discard, o!());
 
         let validator = Validator::new();
 
-        let out = validator.validate(&headers, &canister_id, &agent, &uri, &body, logger);
+        let out = validator.validate(&headers, &canister_id, &agent, &uri, &body);
 
         assert_eq!(out, Ok(()));
     }

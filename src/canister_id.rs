@@ -1,7 +1,28 @@
-use hyper::{header::HOST, Request, Uri};
+use crate::http_transport::hyper::{header::HOST, http::request::Parts, Uri};
+use anyhow::Context;
+use clap::Args;
 use ic_agent::export::Principal;
+use tracing::error;
 
 use crate::config::dns_canister_config::DnsCanisterConfig;
+
+/// The options for the canister resolver
+#[derive(Args)]
+pub struct Opts {
+    /// A map of domain names to canister IDs.
+    /// Format: domain.name:canister-id
+    #[clap(long)]
+    dns_alias: Vec<String>,
+
+    /// A list of domain name suffixes.  If found, the next (to the left) subdomain
+    /// is used as the Principal, if it parses as a Principal.
+    #[clap(long, default_value = "localhost")]
+    dns_suffix: Vec<String>,
+
+    /// Whether or not to ignore `canisterId=` when locating the canister.
+    #[clap(long)]
+    ignore_url_canister_param: bool,
+}
 
 /// A resolver for `Principal`s from a `Uri`.
 trait UriResolver: Sync + Send {
@@ -13,12 +34,11 @@ impl<T: UriResolver> UriResolver for &T {
         T::resolve(self, uri)
     }
 }
-
 struct UriParameterResolver;
 
 impl UriResolver for UriParameterResolver {
     fn resolve(&self, uri: &Uri) -> Option<Principal> {
-        url::form_urlencoded::parse(uri.query()?.as_bytes())
+        form_urlencoded::parse(uri.query()?.as_bytes())
             .find(|(name, _)| name == "canisterId")
             .and_then(|(_, canister_id)| Principal::from_text(canister_id.as_ref()).ok())
     }
@@ -31,31 +51,31 @@ impl UriResolver for DnsCanisterConfig {
 }
 
 /// A resolver for `Principal`s from a `Request`.
-pub trait Resolver<B>: Sync + Send {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal>;
+pub trait Resolver: Sync + Send {
+    fn resolve(&self, request: &Parts) -> Option<Principal>;
 }
 
-impl<B, T: Resolver<B>> Resolver<B> for &T {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
+impl<T: Resolver> Resolver for &T {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
         T::resolve(self, request)
     }
 }
 
 struct RequestUriResolver<T>(pub T);
 
-impl<B, T: UriResolver> Resolver<B> for RequestUriResolver<T> {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
-        self.0.resolve(request.uri())
+impl<T: UriResolver> Resolver for RequestUriResolver<T> {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
+        self.0.resolve(&request.uri)
     }
 }
 
 struct RequestHostResolver<T>(pub T);
 
-impl<B, T: UriResolver> Resolver<B> for RequestHostResolver<T> {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
+impl<T: UriResolver> Resolver for RequestHostResolver<T> {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
         self.0.resolve(
             &Uri::builder()
-                .authority(request.headers().get(HOST)?.as_bytes())
+                .authority(request.headers.get(HOST)?.as_bytes())
                 .build()
                 .ok()?,
         )
@@ -68,8 +88,8 @@ pub struct DefaultResolver {
     pub check_params: bool,
 }
 
-impl<B> Resolver<B> for DefaultResolver {
-    fn resolve(&self, request: &Request<B>) -> Option<Principal> {
+impl Resolver for DefaultResolver {
+    fn resolve(&self, request: &Parts) -> Option<Principal> {
         if let Some(v) = RequestHostResolver(&self.dns).resolve(request) {
             return Some(v);
         }
@@ -85,13 +105,29 @@ impl<B> Resolver<B> for DefaultResolver {
     }
 }
 
+pub fn setup(opts: Opts) -> Result<DefaultResolver, anyhow::Error> {
+    let dns = DnsCanisterConfig::new(&opts.dns_alias, &opts.dns_suffix)
+        .context("Failed to configure canister resolver DNS");
+    let dns = match dns {
+        Err(e) => {
+            error!("{e}");
+            Err(e)
+        }
+        Ok(v) => Ok(v),
+    }?;
+    Ok(DefaultResolver {
+        dns,
+        check_params: !opts.ignore_url_canister_param,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use hyper::{header::HOST, Request};
     use ic_agent::export::Principal;
 
     use super::{DefaultResolver, Resolver};
     use crate::config::dns_canister_config::DnsCanisterConfig;
+    use crate::http_transport::hyper::{header::HOST, http::request::Parts, Request};
 
     #[test]
     fn simple_resolve() {
@@ -229,7 +265,7 @@ mod tests {
         DnsCanisterConfig::new(&aliases, &suffixes).unwrap()
     }
 
-    fn build_req(host: Option<&str>, uri: &str) -> Request<()> {
+    fn build_req(host: Option<&str>, uri: &str) -> Parts {
         let req = Request::builder().uri(uri);
         if let Some(host) = host {
             req.header(HOST, host)
@@ -238,6 +274,8 @@ mod tests {
         }
         .body(())
         .unwrap()
+        .into_parts()
+        .0
     }
 
     fn principal(v: &str) -> Principal {

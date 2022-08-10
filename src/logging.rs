@@ -1,79 +1,145 @@
-use crate::Opts;
-use slog::{Drain, Level, LevelFilter, Logger};
-use std::{fs::File, path::PathBuf};
+use std::{fs::File, io::stderr, path::PathBuf};
 
-/// The logging mode to use.
-enum LoggingMode {
-    /// The default mode for logging; output without any decoration, to STDERR.
-    Stderr,
+use axum::Router;
+use clap::{crate_version, ArgEnum, Args};
+use tower_http::trace::TraceLayer;
+use tracing::{
+    info, info_span, level_filters::LevelFilter, span::EnteredSpan, subscriber::set_global_default,
+    Span,
+};
+use tracing_subscriber::{fmt::layer, layer::SubscriberExt, Registry};
 
-    /// Tee logging to a file (in addition to STDERR). This mimics the verbose flag.
-    /// So it would be similar to `dfx ... |& tee /some/file.txt
-    Tee(PathBuf),
-
-    /// Output Debug logs and up to a file, regardless of verbosity, keep the STDERR output
-    /// the same (with verbosity).
-    File(PathBuf),
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ArgEnum, Debug)]
+pub(crate) enum OptMode {
+    StdErr,
+    Tee,
+    File,
 }
 
-fn create_drain(mode: LoggingMode) -> Logger {
-    match mode {
-        LoggingMode::File(out) => {
-            let file = File::create(out).expect("Couldn't open log file");
-            let decorator = slog_term::PlainDecorator::new(file);
-            let drain = slog_term::FullFormat::new(decorator).build().fuse();
-            Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
-        }
-        // A Tee mode is basically 2 drains duplicated.
-        LoggingMode::Tee(out) => Logger::root(
-            slog::Duplicate::new(
-                create_drain(LoggingMode::Stderr),
-                create_drain(LoggingMode::File(out)),
-            )
-            .fuse(),
-            slog::o!(),
-        ),
-        LoggingMode::Stderr => {
-            let decorator = slog_term::PlainDecorator::new(std::io::stderr());
-            let drain = slog_term::CompactFormat::new(decorator).build().fuse();
-            Logger::root(slog_async::Async::new(drain).build().fuse(), slog::o!())
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ArgEnum, Debug)]
+pub(crate) enum OptFormat {
+    Default,
+    Compact,
+    Full,
+    Json,
+}
+
+/// The options for logging
+#[derive(Args)]
+pub struct Opts {
+    /// Verbose level. By default, INFO will be used. Add a single `-v` to upgrade to
+    /// DEBUG, and another `-v` to upgrade to TRACE.
+    #[clap(long, short('v'), parse(from_occurrences))]
+    verbose: u64,
+
+    /// Quiet level. The opposite of verbose. A single `-q` will drop the logging to
+    /// WARN only, then another one to ERR, and finally another one for FATAL. Another
+    /// `-q` will silence ALL logs.
+    #[clap(long, short('q'), parse(from_occurrences))]
+    quiet: u64,
+
+    /// Mode to use the logging. "stderr" will output logs in STDERR, "file" will output
+    /// logs in a file, and "tee" will do both.
+    #[clap(arg_enum, long("log"), default_value_t = OptMode::StdErr)]
+    logmode: OptMode,
+
+    /// Formatting to use the logging. "stderr" will output logs in STDERR, "file" will output
+    /// logs in a file, and "tee" will do both.
+    #[clap(arg_enum, long("logformat"), default_value_t = OptFormat::Default)]
+    logformat: OptFormat,
+
+    /// File to output the log to, when using logmode=tee or logmode=file.
+    #[clap(long)]
+    logfile: Option<PathBuf>,
+}
+
+/// A helper to add tracing with nice spans to `Router`s
+pub fn add_trace_layer(r: Router) -> Router {
+    r.layer(TraceLayer::new_for_http().make_span_with(Span::current()))
+}
+
+pub fn setup(opts: Opts) -> EnteredSpan {
+    let filter = match opts.verbose as i64 - opts.quiet as i64 {
+        -2 => LevelFilter::ERROR,
+        -1 => LevelFilter::WARN,
+        0 => LevelFilter::INFO,
+        1 => LevelFilter::DEBUG,
+        x if x >= 2 => LevelFilter::TRACE,
+        // Silent.
+        _ => LevelFilter::OFF,
+    };
+
+    fn create_file(path: Option<PathBuf>) -> File {
+        File::create(path.unwrap_or_else(|| "log.txt".into())).expect("Couldn't open log file")
+    }
+
+    // The `layer_format` macro is used to uniformly customize the the format specific options for a layer
+    // (e.g. all json should be flattened)
+    macro_rules! layer_format {
+        (json, $writer:expr) => {
+            layer()
+                .json()
+                .flatten_event(true)
+                .with_current_span(false)
+                .with_writer($writer)
+        };
+        (full, $writer:expr) => {
+            layer().with_writer($writer)
+        };
+        (compact, $writer:expr) => {
+            layer().compact().with_writer($writer)
+        };
+    }
+    // The `writer` macro is used to uniformly customize the the writer specific options for a layer
+    // (e.g. files don't use ANSI terminal colors)
+    macro_rules! writer {
+        (file, $format:ident) => {
+            layer_format!($format, create_file(opts.logfile)).with_ansi(false)
+        };
+        (stderr, $format:ident) => {
+            layer_format!($format, stderr)
+        };
+    }
+    // The `layer` macro is used to uniformly customize the the writer-format specific options for a layer
+    // (e.g. file-json includes the current span [we don't actually do this, it's just an hypothetical example])
+    macro_rules! layer {
+        ($writer:ident, $format:ident) => {
+            writer!($writer, $format)
+        };
+    }
+
+    // The `install` macro filters to the specified level and adds all the layers to the global subscriber
+    macro_rules! install {
+        ($($layer:expr),+) => {
+            set_global_default(Registry::default().with(filter)$(.with($layer))+)
         }
     }
-}
 
-pub(crate) fn setup_logging(opts: &Opts) -> Logger {
-    // Create a logger with our argument matches.
-    let verbose_level = opts.verbose as i64 - opts.quiet as i64;
-    let logfile = opts.logfile.clone().unwrap_or_else(|| "log.txt".into());
-
-    let mode = match opts.logmode.as_str() {
-        "tee" => LoggingMode::Tee(logfile),
-        "file" => LoggingMode::File(logfile),
-        "stderr" => LoggingMode::Stderr,
-        _ => unreachable!("unhandled logmode"),
-    };
-
-    let log_level = match verbose_level {
-        -3 => Level::Critical,
-        -2 => Level::Error,
-        -1 => Level::Warning,
-        0 => Level::Info,
-        1 => Level::Debug,
-        2 => Level::Trace,
-        x => {
-            if x > 0 {
-                Level::Trace
-            } else {
-                // Silent.
-                return Logger::root(slog::Discard, slog::o!());
-            }
+    match (opts.logmode, opts.logformat) {
+        (OptMode::Tee, OptFormat::Default) => {
+            install!(layer!(stderr, compact), layer!(file, full))
         }
-    };
+        (OptMode::Tee, OptFormat::Compact) => {
+            install!(layer!(stderr, compact), layer!(file, compact))
+        }
+        (OptMode::Tee, OptFormat::Full) => install!(layer!(stderr, full), layer!(file, full)),
+        (OptMode::Tee, OptFormat::Json) => install!(layer!(stderr, json), layer!(file, json)),
+        (OptMode::File, OptFormat::Default | OptFormat::Full) => {
+            install!(layer!(file, full))
+        }
+        (OptMode::File, OptFormat::Compact) => {
+            install!(layer!(file, compact))
+        }
+        (OptMode::File, OptFormat::Json) => install!(layer!(file, json)),
+        (OptMode::StdErr, OptFormat::Default | OptFormat::Compact) => {
+            install!(layer!(stderr, compact))
+        }
+        (OptMode::StdErr, OptFormat::Full) => install!(layer!(stderr, full)),
+        (OptMode::StdErr, OptFormat::Json) => install!(layer!(stderr, json)),
+    }
+    .expect("Failed to setup tracing.");
 
-    let drain = LevelFilter::new(create_drain(mode), log_level).fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    let root = Logger::root(drain, slog::o!("version" => clap::crate_version!()));
-    slog::info!(root, "Log Level: {}", log_level);
-    root
+    let span = info_span!(target: "icx_proxy", "icx-proxy", version = crate_version!()).entered();
+    info!(target: "icx_proxy", "Log Level: {filter}");
+    span
 }
