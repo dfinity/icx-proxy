@@ -7,13 +7,13 @@ use std::{
 use anyhow::{bail, Context};
 use axum::{handler::Handler, routing::any, Extension, Router};
 use clap::Args;
-use ic_agent::Agent;
-use tracing::{error, info};
-
-use crate::http_transport::{
+use ic_agent::agent::http_transport::{
     hyper::{self, Response, StatusCode, Uri},
     HyperReplicaV2Transport,
 };
+use ic_agent::Agent;
+use tracing::{error, info};
+
 use crate::{
     canister_id::Resolver as CanisterIdResolver,
     http_client::{Body, HyperService},

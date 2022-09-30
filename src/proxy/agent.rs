@@ -11,7 +11,13 @@ use anyhow::bail;
 use axum::{extract::ConnectInfo, Extension};
 use futures::StreamExt;
 use http_body::{LengthLimitError, Limited};
-use ic_agent::{agent_error::HttpErrorPayload, Agent, AgentError};
+use ic_agent::{
+    agent::http_transport::hyper::{
+        body, http::header::CONTENT_TYPE, Body, Request, Response, StatusCode, Uri,
+    },
+    agent_error::HttpErrorPayload,
+    Agent, AgentError,
+};
 use ic_utils::{
     call::{AsyncCall, SyncCall},
     interfaces::http_request::{
@@ -21,9 +27,6 @@ use ic_utils::{
 };
 use tracing::{enabled, instrument, trace, warn, Level};
 
-use crate::http_transport::hyper::{
-    body, http::header::CONTENT_TYPE, Body, Request, Response, StatusCode, Uri,
-};
 use crate::{
     canister_id::Resolver as CanisterIdResolver,
     headers::extract_headers_data,

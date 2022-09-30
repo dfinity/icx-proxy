@@ -11,9 +11,6 @@ mod metrics;
 mod proxy;
 mod validate;
 
-// TODO: remove pending dfinity/agent-rs#373
-mod http_transport;
-
 use crate::{
     metrics::{MetricParams, WithMetrics},
     validate::Validator,

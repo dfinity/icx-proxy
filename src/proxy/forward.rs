@@ -7,13 +7,13 @@ use std::{
 };
 
 use axum::{extract::ConnectInfo, Extension};
-use tracing::{info, instrument};
-
-use crate::http_transport::hyper::{
+use ic_agent::agent::http_transport::hyper::{
     header::{Entry, HeaderValue},
     http::uri::Parts,
     HeaderMap, Request, Response, Uri,
 };
+use tracing::{info, instrument};
+
 use crate::{
     http_client::{Body, HyperService},
     proxy::HandleError,

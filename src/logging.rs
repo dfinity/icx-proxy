@@ -1,7 +1,7 @@
 use std::{fs::File, io::stderr, path::PathBuf};
 
 use axum::Router;
-use clap::{crate_version, ArgEnum, Args};
+use clap::{crate_version, ArgAction::Count, Args, ValueEnum};
 use tower_http::trace::TraceLayer;
 use tracing::{
     info, info_span, level_filters::LevelFilter, span::EnteredSpan, subscriber::set_global_default,
@@ -9,14 +9,14 @@ use tracing::{
 };
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, Registry};
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ArgEnum, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub(crate) enum OptMode {
     StdErr,
     Tee,
     File,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ArgEnum, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub(crate) enum OptFormat {
     Default,
     Compact,
@@ -29,23 +29,23 @@ pub(crate) enum OptFormat {
 pub struct Opts {
     /// Verbose level. By default, INFO will be used. Add a single `-v` to upgrade to
     /// DEBUG, and another `-v` to upgrade to TRACE.
-    #[clap(long, short('v'), parse(from_occurrences))]
+    #[clap(long, short('v'), action = Count)]
     verbose: u64,
 
     /// Quiet level. The opposite of verbose. A single `-q` will drop the logging to
     /// WARN only, then another one to ERR, and finally another one for FATAL. Another
     /// `-q` will silence ALL logs.
-    #[clap(long, short('q'), parse(from_occurrences))]
+    #[clap(long, short('q'), action = Count)]
     quiet: u64,
 
     /// Mode to use the logging. "stderr" will output logs in STDERR, "file" will output
     /// logs in a file, and "tee" will do both.
-    #[clap(arg_enum, long("log"), default_value_t = OptMode::StdErr)]
+    #[clap(value_enum, long("log"), default_value_t = OptMode::StdErr)]
     logmode: OptMode,
 
     /// Formatting to use the logging. "stderr" will output logs in STDERR, "file" will output
     /// logs in a file, and "tee" will do both.
-    #[clap(arg_enum, long("logformat"), default_value_t = OptFormat::Default)]
+    #[clap(value_enum, long("logformat"), default_value_t = OptFormat::Default)]
     logformat: OptFormat,
 
     /// File to output the log to, when using logmode=tee or logmode=file.

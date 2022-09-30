@@ -17,7 +17,7 @@ use hyper_rustls::HttpsConnectorBuilder;
 use itertools::Either;
 use tracing::error;
 
-use crate::http_transport::{
+use ic_agent::agent::http_transport::{
     self,
     hyper::{
         self,
@@ -33,6 +33,8 @@ use crate::http_transport::{
 
 /// DNS resolve overrides
 /// `ic0.app=[::1]:9090`
+
+#[derive(Clone)]
 struct OptResolve {
     domain: String,
     addr: SocketAddr,
