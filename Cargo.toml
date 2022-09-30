@@ -1,6 +1,6 @@
 [package]
 name = "icx-proxy"
-version = "0.10.0"
+version = "0.10.1"
 authors = ["DFINITY Stiftung <sdk@dfinity.org>"]
 edition = "2018"
 description = "CLI tool to create an HTTP proxy to the Internet Computer."
@@ -21,7 +21,7 @@ anyhow = "1"
 axum = "0.5"
 base64 = "0.13"
 candid = { version = "0.7", features = ["mute_warnings"] }
-clap = { version = "3", features = ["cargo", "derive"] }
+clap = { version = "4", features = ["cargo", "derive"] }
 flate2 = "1"
 form_urlencoded = "1"
 futures = "0.3"
@@ -31,8 +31,8 @@ http-body = "0.4"
 hyper = { version = "0.14.11", features = ["client", "http2", "http1"] }
 hyper-rustls = { version = "0.23", features = [ "webpki-roots", "http2" ] }
 itertools = "0.10"
-ic-agent = { version = "0.20", default-features = false }
-ic-utils = { version = "0.20", features = ["raw"] }
+ic-agent = { version = "0.20.1", default-features = false, features = ["hyper"] }
+ic-utils = { version = "0.20.1", features = ["raw"] }
 lazy-regex = "2"
 opentelemetry = "0.17"
 opentelemetry-prometheus = "0.10"
